@@ -365,8 +365,8 @@ if st.button("🚀 汎用分析を実行"):
             st.markdown("- **中殿筋・バランス**: 片脚立ち保持（1分間）")
         if frt < 30:
             st.markdown("- **動的バランス**: 重心移動練習")
-            
-        with rec_col2:
+
+    with rec_col2:
         # PDF生成
         pdf_data = create_pdf(client_name, input_data, feedbacks, main_metrics)
         st.download_button(
