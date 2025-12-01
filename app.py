@@ -28,8 +28,8 @@ with st.sidebar.expander("2. 機能測定結果", expanded=True):
     col_s1, col_s2 = st.columns(2)
     with col_s1:
         grip_l = st.number_input("握力(左) kg", value=20.0)
-        hip_flex_l = st.number_input("股屈曲(左) kgf/kg", value=0.8) # 弱めに設定
-        one_leg_l = st.number_input("片脚立位(左) 秒", value=10)   # 短めに設定
+        hip_flex_l = st.number_input("股屈曲(左) kgf/kg", value=0.8)
+        one_leg_l = st.number_input("片脚立位(左) 秒", value=10)
         toe_grip_l = st.number_input("足趾把持(左) %", value=8.0)
     with col_s2:
         grip_r = st.number_input("握力(右) kg", value=29.0)
@@ -54,20 +54,18 @@ def calculate_angle(a, b, c):
 def draw_grid(image, interval=50):
     """姿勢評価用のグリッド線を描画"""
     h, w, _ = image.shape
-    color = (200, 200, 200) # 薄いグレー
-    # 縦線
+    color = (200, 200, 200) 
     center_x = w // 2
-    cv2.line(image, (center_x, 0), (center_x, h), (0, 255, 255), 1) # 中心線は黄色
+    cv2.line(image, (center_x, 0), (center_x, h), (0, 255, 255), 1) 
     for x in range(0, w, interval):
         if x != center_x:
             cv2.line(image, (x, 0), (x, h), color, 1)
-    # 横線
     for y in range(0, h, interval):
         cv2.line(image, (0, y), (w, y), color, 1)
     return image
 
 def process_video(uploaded_file, view_type):
-    if uploaded_file is None: return None, None
+    if uploaded_file is None: return None, pd.DataFrame() # 空DFを返す
     
     tfile = tempfile.NamedTemporaryFile(delete=False) 
     tfile.write(uploaded_file.read())
@@ -83,8 +81,6 @@ def process_video(uploaded_file, view_type):
     
     data = []
     
-    # 描画したいID (顔なし、シンプル版)
-    # 頭(0), 肩(11,12), 腰(23,24), 膝(25,26), 足首(27,28), つま先(31,32)
     KEYPOINTS = [0, 11, 12, 23, 24, 25, 26, 27, 28, 31, 32]
     CONNECTIONS = [
         (11, 12), (23, 24), (11, 23), (12, 24), 
@@ -104,10 +100,15 @@ def process_video(uploaded_file, view_type):
             image.flags.writeable = True
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             
-            # --- グリッド描画 (ここに追加) ---
             image = draw_grid(image, interval=width//10)
 
-            frame_data = {"frame": frame_idx}
+            # 【修正点】初期値をNaN（欠損値）にしておくことでKeyErrorを防ぐ
+            frame_data = {
+                "frame": frame_idx,
+                "l_knee": np.nan, "r_knee": np.nan,
+                "shoulder_tilt": np.nan, "hip_tilt": np.nan,
+                "sway": np.nan, "step_len": np.nan
+            }
             
             if results.pose_landmarks:
                 landmarks = results.pose_landmarks.landmark
@@ -116,39 +117,31 @@ def process_video(uploaded_file, view_type):
                 def get_c(idx): return [landmarks[idx].x, landmarks[idx].y]
                 def get_pix(idx): return int(landmarks[idx].x * w_img), int(landmarks[idx].y * h_img)
                 
-                # --- データ取得 ---
-                # 膝角度
+                # 計算処理
                 l_knee = calculate_angle(get_c(23), get_c(25), get_c(27))
                 r_knee = calculate_angle(get_c(24), get_c(26), get_c(28))
-                
-                # 肩・骨盤の傾き (Y座標の差)
-                # 値が大きいほど傾いている。符号で左右。
                 shoulder_tilt = (landmarks[12].y - landmarks[11].y) * 100 
                 hip_tilt = (landmarks[24].y - landmarks[23].y) * 100
-                
-                # スウェイ (正中線からのズレ)
-                # 画面中央(0.5)ではなく、両肩の中心を基準にする
                 mid_sh_x = (landmarks[11].x + landmarks[12].x) / 2
                 mid_hip_x = (landmarks[23].x + landmarks[24].x) / 2
                 sway = (mid_hip_x - mid_sh_x) * 100
-
-                # 歩幅プロキシ (足首間のX距離)
                 step_len = abs(landmarks[27].x - landmarks[28].x) * 100
                 
+                # 値を上書き
                 frame_data.update({
                     "l_knee": l_knee, "r_knee": r_knee,
                     "shoulder_tilt": shoulder_tilt, "hip_tilt": hip_tilt,
                     "sway": sway, "step_len": step_len
                 })
 
-                # --- 描画 ---
+                # 描画
                 for start, end in CONNECTIONS:
                     cv2.line(image, get_pix(start), get_pix(end), (255, 255, 255), 2)
-                
                 for idx in KEYPOINTS:
-                    color = (0, 0, 255) if idx % 2 == 0 else (255, 0, 0) # 右赤、左青
+                    color = (0, 0, 255) if idx % 2 == 0 else (255, 0, 0)
                     cv2.circle(image, get_pix(idx), 6, color, -1)
-                    
+            
+            data.append(frame_data)
             out.write(image)
             frame_idx += 1
             
@@ -170,69 +163,69 @@ if file_front and file_side and st.button("🚀 解析開始"):
         path_f, df_f = process_video(file_front, "front")
         path_s, df_s = process_video(file_side, "side")
         
-        st.markdown("---")
-        
-        # 1. 動画と波形を並べて表示 (Visual Feedback重視)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.video(path_f)
-            st.caption("正面：グリッドで左右のブレを確認")
-            # スウェイグラフ（左右の揺れ）
-            fig, ax = plt.subplots(figsize=(5, 2))
-            ax.plot(df_f['sway'], color='purple', label='骨盤の横揺れ')
-            ax.axhline(0, color='gray', linestyle='--')
-            ax.set_title("体幹に対する骨盤の左右動揺")
-            ax.legend()
-            st.pyplot(fig)
-            
-        with c2:
-            st.video(path_s)
-            st.caption("側面：歩幅と姿勢を確認")
-            # 膝角度グラフ（左右比較）
-            fig2, ax2 = plt.subplots(figsize=(5, 2))
-            ax2.plot(df_s['l_knee'], color='blue', label='左膝', alpha=0.7)
-            ax2.plot(df_s['r_knee'], color='red', label='右膝', alpha=0.7)
-            ax2.set_title("膝関節の屈曲角度 (左右差チェック)")
-            ax2.legend()
-            st.pyplot(fig2)
-
-        # 2. 厳格なリスク分析 (Strict Logic)
-        st.header("👨‍⚕️ 動作分析レポート")
-        
-        alerts = []
-        
-        # A. 膝の機能不全（左右差判定）
-        max_l = df_s['l_knee'].max()
-        max_r = df_s['r_knee'].max()
-        diff_knee = abs(max_l - max_r)
-        
-        if diff_knee > 10: # 10度以上の差は異常
-            weak_side = "左" if max_l < max_r else "右"
-            alerts.append(f"🚨 **膝の動きに大きな左右差あり (差: {diff_knee:.1f}度)**\n{weak_side}側の膝の曲がりが浅いです。痛みを避けているか、可動域制限の可能性があります。")
-        
-        # B. スウェイ（動揺）
-        sway_range = df_f['sway'].max() - df_f['sway'].min()
-        if sway_range > 10: # 閾値を厳しく設定
-            reason = "中殿筋の筋力低下" if (one_leg_l < 20 or one_leg_r < 20) else "体幹機能の不安定さ"
-            alerts.append(f"🚨 **歩行時の骨盤動揺（ふらつき）が大きい**です。\n{reason}が疑われます。（片脚立位: L{one_leg_l}秒 / R{one_leg_r}秒）")
-        
-        # C. 推進力不足
-        step_avg = df_s['step_len'].mean()
-        if step_avg < 15: # 閾値調整
-            alerts.append("⚠️ **歩幅が全体的に小さい**です。\n足趾把持力低下や、股関節の伸展制限（蹴り出し不足）が考えられます。")
-        
-        # D. 機能データとの乖離
-        if toe_grip_l < 10 or toe_grip_r < 10:
-            alerts.append("⚠️ **足趾把持力が低下**しています（基準値未満）。\nこれが「蹴り出し不足」や「ふらつき」の根本原因の可能性があります。")
-
-        if frt < 25:
-             alerts.append("⚠️ **FRT(25cm未満)**：動的バランス能力が低下しており、転倒リスクが高い状態です。")
-
-        # 結果出力
-        if alerts:
-            for a in alerts:
-                st.error(a)
+        # エラーハンドリング: 解析失敗（人が映っていない等）の場合
+        if df_f.empty or df_s.empty or df_f['sway'].isna().all():
+            st.error("⚠️ 解析エラー: 動画から人物の骨格を検出できませんでした。全身が映っている動画を使用してください。")
         else:
-            st.success("動作バランスは比較的良好です。引き続き左右差に注意してモニタリングしましょう。")
+            st.markdown("---")
+            
+            # 1. 動画と波形
+            c1, c2 = st.columns(2)
+            with c1:
+                st.video(path_f)
+                st.caption("正面：グリッドで左右のブレを確認")
+                fig, ax = plt.subplots(figsize=(5, 2))
+                ax.plot(df_f['sway'], color='purple', label='骨盤の横揺れ')
+                ax.axhline(0, color='gray', linestyle='--')
+                ax.set_title("体幹に対する骨盤の左右動揺")
+                ax.legend()
+                st.pyplot(fig)
+                
+            with c2:
+                st.video(path_s)
+                st.caption("側面：歩幅と姿勢を確認")
+                fig2, ax2 = plt.subplots(figsize=(5, 2))
+                ax2.plot(df_s['l_knee'], color='blue', label='左膝', alpha=0.7)
+                ax2.plot(df_s['r_knee'], color='red', label='右膝', alpha=0.7)
+                ax2.set_title("膝関節の屈曲角度 (左右差チェック)")
+                ax2.legend()
+                st.pyplot(fig2)
 
-        st.info("※ この解析はスクリーニングです。確定診断は専門機関での評価が必要です。")
+            # 2. リスク分析
+            st.header("👨‍⚕️ 動作分析レポート")
+            alerts = []
+            
+            # A. 膝の左右差
+            max_l = df_s['l_knee'].max()
+            max_r = df_s['r_knee'].max()
+            diff_knee = abs(max_l - max_r)
+            
+            if diff_knee > 10:
+                weak_side = "左" if max_l < max_r else "右"
+                alerts.append(f"🚨 **膝の動きに大きな左右差あり (差: {diff_knee:.1f}度)**\n{weak_side}側の膝の曲がりが浅いです。痛みを避けているか、可動域制限の可能性があります。")
+            
+            # B. スウェイ
+            sway_range = df_f['sway'].max() - df_f['sway'].min()
+            if sway_range > 10: 
+                reason = "中殿筋の筋力低下" if (one_leg_l < 20 or one_leg_r < 20) else "体幹機能の不安定さ"
+                alerts.append(f"🚨 **歩行時の骨盤動揺（ふらつき）が大きい**です。\n{reason}が疑われます。（片脚立位: L{one_leg_l}秒 / R{one_leg_r}秒）")
+            
+            # C. 推進力
+            step_avg = df_s['step_len'].mean()
+            if step_avg < 15:
+                alerts.append("⚠️ **歩幅が全体的に小さい**です。\n足趾把持力低下や、股関節の伸展制限（蹴り出し不足）が考えられます。")
+            
+            # D. 機能データ乖離
+            if toe_grip_l < 10 or toe_grip_r < 10:
+                alerts.append("⚠️ **足趾把持力が低下**しています（基準値未満）。\nこれが「蹴り出し不足」や「ふらつき」の根本原因の可能性があります。")
+
+            if frt < 25:
+                alerts.append("⚠️ **FRT(25cm未満)**：動的バランス能力が低下しており、転倒リスクが高い状態です。")
+
+            if alerts:
+                for a in alerts:
+                    st.error(a)
+            else:
+                st.success("動作バランスは比較的良好です。引き続き左右差に注意してモニタリングしましょう。")
+
+            st.info("※ この解析はスクリーニングです。確定診断は専門機関での評価が必要です。")
