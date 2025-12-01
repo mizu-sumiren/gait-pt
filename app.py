@@ -366,7 +366,7 @@ if st.button("🚀 汎用分析を実行"):
         if frt < 30:
             st.markdown("- **動的バランス**: 重心移動練習")
             
-    with rec_col2:
+        with rec_col2:
         # PDF生成
         pdf_data = create_pdf(client_name, input_data, feedbacks, main_metrics)
         st.download_button(
@@ -375,3 +375,24 @@ if st.button("🚀 汎用分析を実行"):
             file_name=f"{client_name}_Analysis_Report.pdf",
             mime="application/pdf"
         )
+        
+        st.markdown("---") # 区切り線
+
+        # 2. 解析動画のDL
+        if path_s: # 側面動画がある場合
+            with open(path_s, 'rb') as v_file:
+                st.download_button(
+                    label="🎥 解析動画 (側面)を保存",
+                    data=v_file,
+                    file_name=f"{client_name}_SideView.mp4",
+                    mime="video/mp4"
+                )
+        
+        if path_f: # 正面動画がある場合
+            with open(path_f, 'rb') as v_file:
+                st.download_button(
+                    label="🎥 解析動画 (正面)を保存",
+                    data=v_file,
+                    file_name=f"{client_name}_FrontView.mp4",
+                    mime="video/mp4"
+                )
