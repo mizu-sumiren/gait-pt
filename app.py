@@ -5,8 +5,12 @@ import numpy as np
 import pandas as pd
 import tempfile
 import matplotlib.pyplot as plt
-import japanize_matplotlib
 import math
+
+# ---------------------------------------------------------
+# 注意: japanize_matplotlib は requirements.txt 設定が必要なため
+# エラー回避のために削除しました。今回はグラフ描画がないので影響ありません。
+# ---------------------------------------------------------
 
 # --- ページ設定 ---
 st.set_page_config(page_title="統合歩行分析レポート (PT Pro)", page_icon="🛡️", layout="wide")
@@ -109,7 +113,7 @@ def generate_clinical_feedback(data):
 
     return feedback
 
-# --- 動画処理関数（前回と同じ） ---
+# --- 動画処理関数 ---
 def draw_grid_and_skeleton(image, results):
     h, w, _ = image.shape
     color_grid = (200, 200, 200)
@@ -202,7 +206,6 @@ if st.button("🚀 汎用分析を実行"):
     # 3. 汎用的な推奨運動
     st.subheader("🏋️‍♀️ 推奨される運動プログラム")
     
-    # 弱点に応じたメニュー表示
     if (toe_grip_l + toe_grip_r)/2 < 15:
         st.markdown("- **足指強化**: タオルギャザー、足指じゃんけん（足指で蹴る感覚を養う）")
     if hip_flex_l < 1.0 or hip_flex_r < 1.0:
