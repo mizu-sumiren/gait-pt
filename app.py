@@ -8,9 +8,10 @@ import matplotlib.pyplot as plt
 import math
 
 # ---------------------------------------------------------
-# 注意: japanize_matplotlib は requirements.txt 設定が必要なため
-# エラー回避のために削除しました。今回はグラフ描画がないので影響ありません。
+# 修正箇所: MediaPipeの初期化を追加しました
 # ---------------------------------------------------------
+mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
 
 # --- ページ設定 ---
 st.set_page_config(page_title="統合歩行分析レポート (PT Pro)", page_icon="🛡️", layout="wide")
@@ -34,14 +35,14 @@ with st.sidebar.expander("2. 機能測定結果", expanded=True):
     with col_s1:
         st.markdown("**左側 (Left)**")
         grip_l = st.number_input("握力(左) kg", value=20.0)
-        hip_flex_l = st.number_input("股屈曲(左) kgf/kg", value=0.9) # 試しに低くしてみる
-        one_leg_l = st.number_input("片脚立位(左) 秒", value=15)    # 試しに低くしてみる
-        toe_grip_l = st.number_input("足趾把持(左) %", value=10.0)  # 試しに低くしてみる
+        hip_flex_l = st.number_input("股屈曲(左) kgf/kg", value=0.9)
+        one_leg_l = st.number_input("片脚立位(左) 秒", value=15.0)
+        toe_grip_l = st.number_input("足趾把持(左) %", value=10.0)
     with col_s2:
         st.markdown("**右側 (Right)**")
         grip_r = st.number_input("握力(右) kg", value=25.0)
         hip_flex_r = st.number_input("股屈曲(右) kgf/kg", value=1.2)
-        one_leg_r = st.number_input("片脚立位(右) 秒", value=60)
+        one_leg_r = st.number_input("片脚立位(右) 秒", value=60.0)
         toe_grip_r = st.number_input("足趾把持(右) %", value=20.0)
 
     st.markdown("---")
@@ -147,6 +148,8 @@ def process_video(uploaded_file):
     output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    # 修正箇所: ここで mp_pose を使うために、冒頭で mp_pose を定義しています
     with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
         while cap.isOpened():
             ret, frame = cap.read()
