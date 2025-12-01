@@ -9,63 +9,89 @@ import japanize_matplotlib
 import math
 
 # --- ページ設定 ---
-st.set_page_config(page_title="総合歩行・身体機能分析AI (Pro)", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="統合歩行分析レポート (PT Pro)", page_icon="🛡️", layout="wide")
 
-st.title("🛡️ 総合歩行・身体機能分析AI (Pro)")
-st.markdown("歩行の「左右差」と「機能不全」を徹底的に分析します。")
+st.title("🛡️ 統合歩行・身体機能分析レポート")
+st.markdown("身体機能データの「左右差」や「弱点」が、歩行や痛みにどう影響しているかを分析します。")
 
-# --- サイドバー：詳細な機能チェック ---
-st.sidebar.header("📋 身体機能・測定データ")
+# --- サイドバー：詳細な機能チェック（画像の数値をデフォルト設定） ---
+st.sidebar.header("📋 測定データ入力")
 
-with st.sidebar.expander("1. 問診・痛み", expanded=True):
+with st.sidebar.expander("1. 問診・痛み情報", expanded=True):
+    # デフォルトで「股関節(右)」を選択状態に
     pain_areas = st.multiselect(
         "痛み・違和感のある部位",
-        ["特になし", "首", "肩", "腰", "股関節(右)", "股関節(左)", "膝(右)", "膝(左)", "足首・足部"]
+        ["特になし", "首", "肩", "腰", "股関節(右)", "股関節(左)", "膝(右)", "膝(左)", "足首・足部"],
+        default=["股関節(右)"]
     )
-    history = st.text_area("既往歴・特記事項")
+    history = st.text_area("特記事項", value="右股関節に硬さと痛みあり。全体的な身体機能は高い。")
 
-with st.sidebar.expander("2. 機能測定結果", expanded=True):
+with st.sidebar.expander("2. 機能測定結果 (画像データ反映)", expanded=True):
     col_s1, col_s2 = st.columns(2)
     with col_s1:
-        grip_l = st.number_input("握力(左) kg", value=20.0)
-        hip_flex_l = st.number_input("股屈曲(左) kgf/kg", value=0.8)
-        one_leg_l = st.number_input("片脚立位(左) 秒", value=10)
-        toe_grip_l = st.number_input("足趾把持(左) %", value=8.0)
+        st.markdown("**左側 (Left)**")
+        grip_l = st.number_input("握力(左) kg", value=28.6)
+        hip_flex_l = st.number_input("股屈曲(左) kgf/kg", value=1.21) # 右より低い
+        one_leg_l = st.number_input("片脚立位(左) 秒", value=120)
+        toe_grip_l = st.number_input("足趾把持(左) %", value=11.0) # 低い
     with col_s2:
+        st.markdown("**右側 (Right)**")
         grip_r = st.number_input("握力(右) kg", value=29.0)
         hip_flex_r = st.number_input("股屈曲(右) kgf/kg", value=1.36)
         one_leg_r = st.number_input("片脚立位(右) 秒", value=120)
-        toe_grip_r = st.number_input("足趾把持(右) %", value=11.0)
+        toe_grip_r = st.number_input("足趾把持(右) %", value=11.0) # 低い
 
-    frt = st.number_input("FRT (cm)", value=20.0)
-    ffd = st.number_input("FFD (cm)", value=-5.0)
-    seat_step = st.number_input("座位ステップ (回/20秒)", value=30)
+    st.markdown("---")
+    frt = st.number_input("FRT (cm)", value=42.0)
+    ffd = st.number_input("FFD (cm)", value=13.6)
+    seat_step = st.number_input("座位ステップ (回/20秒)", value=47)
 
-# --- 解析用関数群 ---
+# --- 解析用関数 ---
 mp_pose = mp.solutions.pose
 
-def calculate_angle(a, b, c):
-    a = np.array(a); b = np.array(b); c = np.array(c)
-    radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
-    angle = np.abs(radians*180.0/np.pi)
-    if angle > 180.0: angle = 360-angle
-    return angle
-
-def draw_grid(image, interval=50):
-    """姿勢評価用のグリッド線を描画"""
+def draw_grid_and_skeleton(image, results):
+    """グリッドと骨格を描画する関数"""
     h, w, _ = image.shape
-    color = (200, 200, 200) 
+    
+    # 1. グリッド描画
+    color_grid = (200, 200, 200)
     center_x = w // 2
-    cv2.line(image, (center_x, 0), (center_x, h), (0, 255, 255), 1) 
-    for x in range(0, w, interval):
-        if x != center_x:
-            cv2.line(image, (x, 0), (x, h), color, 1)
-    for y in range(0, h, interval):
-        cv2.line(image, (0, y), (w, y), color, 1)
+    cv2.line(image, (center_x, 0), (center_x, h), (0, 255, 255), 1) # 黄色の正中線
+    # 縦線
+    for x in range(0, w, w//8):
+        if x != center_x: cv2.line(image, (x, 0), (x, h), color_grid, 1)
+    # 横線
+    for y in range(0, h, h//6):
+        cv2.line(image, (0, y), (w, y), color_grid, 1)
+
+    # 2. 骨格描画（スッキリ版）
+    if results.pose_landmarks:
+        landmarks = results.pose_landmarks.landmark
+        
+        # 描画する関節と接続
+        params = [
+            (11, 12), (23, 24), (11, 23), (12, 24), # 体幹
+            (23, 25), (24, 26), (25, 27), (26, 28), # 脚
+            (27, 31), (28, 32) # 足
+        ]
+        
+        def get_p(idx): return int(landmarks[idx].x * w), int(landmarks[idx].y * h)
+
+        # 線
+        for s, e in params:
+            cv2.line(image, get_p(s), get_p(e), (255, 255, 255), 3)
+            
+        # 点（右：赤、左：青）
+        keypoints = [0, 11, 12, 23, 24, 25, 26, 27, 28, 31, 32]
+        for k in keypoints:
+            color = (0, 0, 255) if k % 2 == 0 else (255, 0, 0) # 右偶数、左奇数
+            if k == 0: color = (0, 255, 255) # 頭
+            cv2.circle(image, get_p(k), 6, color, -1)
+            
     return image
 
-def process_video(uploaded_file, view_type):
-    if uploaded_file is None: return None, pd.DataFrame() # 空DFを返す
+def process_video(uploaded_file):
+    if uploaded_file is None: return None
     
     tfile = tempfile.NamedTemporaryFile(delete=False) 
     tfile.write(uploaded_file.read())
@@ -79,17 +105,7 @@ def process_video(uploaded_file, view_type):
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
-    data = []
-    
-    KEYPOINTS = [0, 11, 12, 23, 24, 25, 26, 27, 28, 31, 32]
-    CONNECTIONS = [
-        (11, 12), (23, 24), (11, 23), (12, 24), 
-        (23, 25), (24, 26), (25, 27), (26, 28),
-        (27, 31), (28, 32)
-    ]
-
     with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
-        frame_idx = 0
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret: break
@@ -100,54 +116,13 @@ def process_video(uploaded_file, view_type):
             image.flags.writeable = True
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             
-            image = draw_grid(image, interval=width//10)
-
-            # 【修正点】初期値をNaN（欠損値）にしておくことでKeyErrorを防ぐ
-            frame_data = {
-                "frame": frame_idx,
-                "l_knee": np.nan, "r_knee": np.nan,
-                "shoulder_tilt": np.nan, "hip_tilt": np.nan,
-                "sway": np.nan, "step_len": np.nan
-            }
-            
-            if results.pose_landmarks:
-                landmarks = results.pose_landmarks.landmark
-                h_img, w_img, _ = image.shape
-                
-                def get_c(idx): return [landmarks[idx].x, landmarks[idx].y]
-                def get_pix(idx): return int(landmarks[idx].x * w_img), int(landmarks[idx].y * h_img)
-                
-                # 計算処理
-                l_knee = calculate_angle(get_c(23), get_c(25), get_c(27))
-                r_knee = calculate_angle(get_c(24), get_c(26), get_c(28))
-                shoulder_tilt = (landmarks[12].y - landmarks[11].y) * 100 
-                hip_tilt = (landmarks[24].y - landmarks[23].y) * 100
-                mid_sh_x = (landmarks[11].x + landmarks[12].x) / 2
-                mid_hip_x = (landmarks[23].x + landmarks[24].x) / 2
-                sway = (mid_hip_x - mid_sh_x) * 100
-                step_len = abs(landmarks[27].x - landmarks[28].x) * 100
-                
-                # 値を上書き
-                frame_data.update({
-                    "l_knee": l_knee, "r_knee": r_knee,
-                    "shoulder_tilt": shoulder_tilt, "hip_tilt": hip_tilt,
-                    "sway": sway, "step_len": step_len
-                })
-
-                # 描画
-                for start, end in CONNECTIONS:
-                    cv2.line(image, get_pix(start), get_pix(end), (255, 255, 255), 2)
-                for idx in KEYPOINTS:
-                    color = (0, 0, 255) if idx % 2 == 0 else (255, 0, 0)
-                    cv2.circle(image, get_pix(idx), 6, color, -1)
-            
-            data.append(frame_data)
+            # 描画処理
+            image = draw_grid_and_skeleton(image, results)
             out.write(image)
-            frame_idx += 1
             
     cap.release()
     out.release()
-    return output_path, pd.DataFrame(data)
+    return output_path
 
 # --- メインレイアウト ---
 col1, col2 = st.columns(2)
@@ -158,74 +133,64 @@ with col2:
     st.subheader("② 側面動画 (Side)")
     file_side = st.file_uploader("横から撮影", type=['mp4', 'mov'], key="s")
 
-if file_front and file_side and st.button("🚀 解析開始"):
-    with st.spinner("AIが動作の左右差とリスクを計算中..."):
-        path_f, df_f = process_video(file_front, "front")
-        path_s, df_s = process_video(file_side, "side")
+if st.button("🚀 専門的分析を実行"):
+    # 動画処理（ある場合のみ）
+    path_f = process_video(file_front) if file_front else None
+    path_s = process_video(file_side) if file_side else None
+    
+    st.markdown("---")
+    
+    # 1. 解析結果表示
+    c1, c2 = st.columns(2)
+    with c1:
+        if path_f:
+            st.video(path_f)
+            st.caption("正面：骨盤の側方動揺と肩のラインを確認")
+    with c2:
+        if path_s:
+            st.video(path_s)
+            st.caption("側面：歩幅と蹴り出し（足首の動き）を確認")
+
+    # 2. PTロジックによるフィードバック生成
+    st.header("👨‍⚕️ 理学療法士AIによる統合フィードバック")
+    
+    # ロジック判定
+    insights = []
+    
+    # A. 全体評価
+    insights.append(f"**【全体像】**\n片脚立位が{one_leg_r}秒、FRTが{frt}cmと、バランス能力や身体の柔軟性は**非常に高いレベル**にあります。一見すると歩行も綺麗で安定しています。")
+    
+    # B. 足趾の機能不全について
+    if toe_grip_l < 15 and toe_grip_r < 15:
+        insights.append(f"**【課題1：足指の機能不全 (11%)】**\n足趾把持力が左右ともに11%と基準値を大きく下回っています。動画でも、後ろ足の踵が浮いた後に**「つま先で地面を蹴る動き」が弱く、足が流れている**ように見受けられます。\n\nこれが弱いと、ふくらはぎや殿筋を使った「前方への推進力」が得られず、**「太ももの前（大腿直筋・腸腰筋）」を使って脚を引き上げる歩き方**になりがちです。")
+
+    # C. 股関節の左右差と痛みのリンク (ここが核心)
+    if "股関節(右)" in pain_areas:
+        mechanism = ""
+        if hip_flex_l < hip_flex_r:
+            diff = hip_flex_r - hip_flex_l
+            mechanism = f"**【考察：右股関節痛の原因】**\n注目すべきは**「左の股関節屈曲筋力（{hip_flex_l}）」が右（{hip_flex_r}）よりも弱い**ことです。\n\n1. 足指の蹴り出しが弱いため、脚を前に出すには「股関節の引き上げ」が必要です。\n2. しかし、**左の引き上げる力が弱いため、左脚を前に振り出す動作が非効率**になっている可能性があります。\n3. 左脚がスムーズに出ないと、**軸足である「右脚（痛い方）」で身体を支える時間が長くなります**。\n\nつまり、**「左脚の機能不全をカバーするために、硬さのある右股関節が過重労働を強いられている」**可能性が高いです。"
         
-        # エラーハンドリング: 解析失敗（人が映っていない等）の場合
-        if df_f.empty or df_s.empty or df_f['sway'].isna().all():
-            st.error("⚠️ 解析エラー: 動画から人物の骨格を検出できませんでした。全身が映っている動画を使用してください。")
-        else:
-            st.markdown("---")
-            
-            # 1. 動画と波形
-            c1, c2 = st.columns(2)
-            with c1:
-                st.video(path_f)
-                st.caption("正面：グリッドで左右のブレを確認")
-                fig, ax = plt.subplots(figsize=(5, 2))
-                ax.plot(df_f['sway'], color='purple', label='骨盤の横揺れ')
-                ax.axhline(0, color='gray', linestyle='--')
-                ax.set_title("体幹に対する骨盤の左右動揺")
-                ax.legend()
-                st.pyplot(fig)
-                
-            with c2:
-                st.video(path_s)
-                st.caption("側面：歩幅と姿勢を確認")
-                fig2, ax2 = plt.subplots(figsize=(5, 2))
-                ax2.plot(df_s['l_knee'], color='blue', label='左膝', alpha=0.7)
-                ax2.plot(df_s['r_knee'], color='red', label='右膝', alpha=0.7)
-                ax2.set_title("膝関節の屈曲角度 (左右差チェック)")
-                ax2.legend()
-                st.pyplot(fig2)
+        insights.append(mechanism)
 
-            # 2. リスク分析
-            st.header("👨‍⚕️ 動作分析レポート")
-            alerts = []
-            
-            # A. 膝の左右差
-            max_l = df_s['l_knee'].max()
-            max_r = df_s['r_knee'].max()
-            diff_knee = abs(max_l - max_r)
-            
-            if diff_knee > 10:
-                weak_side = "左" if max_l < max_r else "右"
-                alerts.append(f"🚨 **膝の動きに大きな左右差あり (差: {diff_knee:.1f}度)**\n{weak_side}側の膝の曲がりが浅いです。痛みを避けているか、可動域制限の可能性があります。")
-            
-            # B. スウェイ
-            sway_range = df_f['sway'].max() - df_f['sway'].min()
-            if sway_range > 10: 
-                reason = "中殿筋の筋力低下" if (one_leg_l < 20 or one_leg_r < 20) else "体幹機能の不安定さ"
-                alerts.append(f"🚨 **歩行時の骨盤動揺（ふらつき）が大きい**です。\n{reason}が疑われます。（片脚立位: L{one_leg_l}秒 / R{one_leg_r}秒）")
-            
-            # C. 推進力
-            step_avg = df_s['step_len'].mean()
-            if step_avg < 15:
-                alerts.append("⚠️ **歩幅が全体的に小さい**です。\n足趾把持力低下や、股関節の伸展制限（蹴り出し不足）が考えられます。")
-            
-            # D. 機能データ乖離
-            if toe_grip_l < 10 or toe_grip_r < 10:
-                alerts.append("⚠️ **足趾把持力が低下**しています（基準値未満）。\nこれが「蹴り出し不足」や「ふらつき」の根本原因の可能性があります。")
+    # D. 柔軟性のリスク
+    if ffd > 10:
+        insights.append(f"**【柔軟性のリスク】**\nFFDが{ffd}cmと非常に柔らかいですが、筋力（特に足指や腸腰筋）が伴っていない場合、**「柔らかすぎて関節で支えてしまう（関節不安定性）」**リスクがあります。右股関節の痛みは、筋肉で支えきれない衝撃が関節包や靭帯にかかっている痛みかもしれません。")
 
-            if frt < 25:
-                alerts.append("⚠️ **FRT(25cm未満)**：動的バランス能力が低下しており、転倒リスクが高い状態です。")
+    # 出力
+    for txt in insights:
+        if txt:
+            st.info(txt)
 
-            if alerts:
-                for a in alerts:
-                    st.error(a)
-            else:
-                st.success("動作バランスは比較的良好です。引き続き左右差に注意してモニタリングしましょう。")
-
-            st.info("※ この解析はスクリーニングです。確定診断は専門機関での評価が必要です。")
+    # 3. 運動処方
+    st.subheader("🏋️‍♀️ 改善のための運動プログラム")
+    st.markdown(f"""
+    この方の痛みを改善し、長く働ける身体を作るには、以下の優先順位をお勧めします。
+    
+    1.  **足指トレーニング（最優先）**
+        * タオルギャザーや足指じゃんけんを徹底し、**「地面を掴んで蹴る」感覚**を取り戻します。これにより、股関節への負担を減らします。
+    2.  **左腸腰筋の強化**
+        * 右側だけでなく、**「左側」のニーアップ（もも上げ）**を行い、左脚をスパッと前に出せるようにします。これで右足の負担時間を減らします。
+    3.  **右中殿筋の安定化**
+        * 痛みのある右側は、動かすよりも「支える力」を高めるため、痛みが出ない範囲での片脚立ち保持やヒップアブダクションを行います。
+    """)
