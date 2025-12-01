@@ -16,6 +16,16 @@ mp_drawing = mp.solutions.drawing_utils
 
 # --- ページ設定 ---
 st.set_page_config(page_title="統合歩行分析レポート (PT Pro)", page_icon="🛡️", layout="wide")
+# --- 画面設定：不要なメニューを非表示にする ---
+hide_streamlit_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            .stDeployButton {display:none;}
+            </style>
+            """
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 st.title("🛡️ 統合歩行・身体機能分析レポート v2.0")
 st.markdown("身体機能評価 × AI歩行分析 × 自動レポート生成")
