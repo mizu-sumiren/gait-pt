@@ -3,132 +3,151 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import tempfile
+import matplotlib.pyplot as plt
 import japanize_matplotlib
 
 # ページ設定
 st.set_page_config(page_title="AI歩行分析", page_icon="🚶")
 
-st.title("🚶 AI歩行分析システム")
-st.write("動画をアップロードすると、AIが「膝の角度」と「体幹の前傾」を解析します。")
+st.title("🚶 AI歩行分析システム (骨格表示版)")
+st.markdown("動画をアップロードすると、**AIが骨格を検出し**、膝の角度などを解析します。")
 
-# 動画アップロード機能
-uploaded_file = st.file_uploader("歩行動画を選択してください", type=['mp4', 'mov'])
+# MediaPipeの準備
+mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
 
-# --- 解析ロジック ---
-def calculate_angle(a, b, c):
-    a = np.array(a); b = np.array(b); c = np.array(c)
-    radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
-    angle = np.abs(radians * 180.0 / np.pi)
-    if angle > 180.0: angle = 360 - angle
-    return angle
+# ファイルアップロード
+uploaded_file = st.file_uploader("歩行動画を選択してください", type=['mp4', 'mov', 'avi'])
 
 if uploaded_file is not None:
-    # 一時ファイルとして保存（OpenCVで読むため）
+    # 一時ファイルとして保存（OpenCVで読み込むため）
     tfile = tempfile.NamedTemporaryFile(delete=False) 
     tfile.write(uploaded_file.read())
     
     cap = cv2.VideoCapture(tfile.name)
     
-    st.info("解析を開始します...少々お待ちください。")
+    # 動画情報の取得
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    
+    # 解析用変数の準備
+    knee_angles = []
+    trunk_angles = []
+    frames = []
+    
+    # 結果動画の保存準備
+    output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v') # コーデック
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+    st.info("解析と動画生成を開始します...（少し時間がかかります）")
     progress_bar = st.progress(0)
     
-    mp_pose = mp.solutions.pose
-    angle_log = []
-    frame_idx = 0
-    
-    # 総フレーム数（進捗バー用）
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
+    # Pose推定の開始
     with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
+        frame_count = 0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
-
-            # 画像処理
+            
+            # 色変換 BGR->RGB
             image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             image.flags.writeable = False
+            
+            # 推定
             results = pose.process(image)
             
-            h, w, _ = frame.shape
+            # 描画のために色を戻す RGB->BGR
+            image.flags.writeable = True
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             
-            # データ取得
-            knee_angle = np.nan
-            trunk_lean = np.nan
-            pelvis_tilt = np.nan
-
             if results.pose_landmarks:
+                # ★ここで骨格を描画しています★
+                mp_drawing.draw_landmarks(
+                    image,
+                    results.pose_landmarks,
+                    mp_pose.POSE_CONNECTIONS,
+                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+                    mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=2)
+                )
+                
+                # ランドマークの取得
                 landmarks = results.pose_landmarks.landmark
-                try:
-                    # 座標
-                    l_hip = [landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x * w, landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y * h]
-                    l_knee = [landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].x * w, landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].y * h]
-                    l_ankle = [landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].x * w, landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].y * h]
-                    l_sh = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x * w, landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y * h]
-                    r_hip = [landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].x * w, landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].y * h]
-
-                    # 計算
-                    knee_angle = calculate_angle(l_hip, l_knee, l_ankle)
+                
+                # 左側の座標取得（簡易的に左側のみ）
+                # 23:左腰, 25:左膝, 27:左足首, 11:左肩
+                hip = [landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x,
+                       landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y]
+                knee = [landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].x,
+                        landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].y]
+                ankle = [landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].x,
+                         landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].y]
+                shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
+                            landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
+                
+                # 角度計算関数
+                def calculate_angle(a, b, c):
+                    a = np.array(a) # First
+                    b = np.array(b) # Mid
+                    c = np.array(c) # End
                     
-                    trunk_vec = np.array(l_sh) - np.array(l_hip)
-                    vertical_vec = np.array([0, -1])
-                    trunk_u = trunk_vec / np.linalg.norm(trunk_vec)
-                    cos_theta = np.dot(trunk_u, vertical_vec)
-                    trunk_lean = np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+                    radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
+                    angle = np.abs(radians*180.0/np.pi)
                     
-                    pelvis_vec = np.array(l_hip) - np.array(r_hip)
-                    pelvis_tilt = np.degrees(np.arctan2(pelvis_vec[1], pelvis_vec[0]))
+                    if angle > 180.0:
+                        angle = 360-angle
+                    return angle
 
-                except:
-                    pass
+                # 膝角度
+                knee_angle = calculate_angle(hip, knee, ankle)
+                knee_angles.append(knee_angle)
+                
+                # 体幹前傾（垂直線との角度）
+                vertical_ref = [hip[0], hip[1] - 0.5] # 腰の真上
+                trunk_angle = calculate_angle(vertical_ref, hip, shoulder)
+                trunk_angles.append(trunk_angle)
+                
+            else:
+                knee_angles.append(np.nan)
+                trunk_angles.append(np.nan)
+
+            # 加工したフレームを動画に書き込み
+            out.write(image)
             
-            angle_log.append([frame_idx, knee_angle, trunk_lean, pelvis_tilt])
-            frame_idx += 1
-            
-            # 進捗更新
+            frame_count += 1
+            frames.append(frame_count)
             if total_frames > 0:
-                progress_bar.progress(min(frame_idx / total_frames, 1.0))
+                progress_bar.progress(min(frame_count / total_frames, 1.0))
 
     cap.release()
+    out.release()
     
-    # --- 結果表示 ---
     st.success("解析完了！")
     
-    if len(angle_log) > 0:
-        df = pd.DataFrame(angle_log, columns=['Frame', 'KneeAngle', 'TrunkLean', 'PelvisTilt'])
-        df_smooth = df.rolling(window=5, min_periods=1).mean()
-
-        # グラフ描画
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
-        
-        # 矢状面
-        ax1.plot(df_smooth['Frame'], df_smooth['KneeAngle'], label='膝角度', color='blue')
-        ax1.set_ylabel('膝角度 (deg)', color='blue')
-        ax1.set_ylim(0, 180)
-        ax1_r = ax1.twinx()
-        ax1_r.plot(df_smooth['Frame'], df_smooth['TrunkLean'], label='体幹前傾', color='red', linestyle='--')
-        ax1_r.set_ylabel('体幹前傾 (deg)', color='red')
-        ax1.set_title('【矢状面】動作解析', fontsize=14)
-        ax1.grid(True)
-        
-        # 前額面
-        ax2.plot(df_smooth['Frame'], df_smooth['PelvisTilt'], label='骨盤の傾き', color='green')
-        ax2.axhline(0, color='black', linewidth=1)
-        ax2.set_ylabel('傾き (deg)', fontsize=12)
-        ax2.set_title('【前額面】左右バランス', fontsize=14)
-        ax2.legend()
-        ax2.grid(True)
-        
-        st.pyplot(fig)
-        
-        # 簡易コメント
-        max_lean = df_smooth['TrunkLean'].max()
-        st.markdown(f"### 📊 AI診断結果")
-        st.write(f"- 最大体幹前傾: **{max_lean:.1f}度**")
-        if max_lean > 20:
-            st.error("⚠️ 前傾が強く、腰部への負担が懸念されます。")
-        else:
-            st.success("✅ 姿勢は概ね良好です。")
-
+    # --- 結果の表示 ---
+    
+    # 1. 生成された動画を表示
+    st.subheader("骨格検知動画")
+    st.video(output_path)
+    
+    # 2. グラフを表示
+    st.subheader("【矢状面】動作解析グラフ")
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+    
+    ax1.set_xlabel('フレーム数')
+    ax1.set_ylabel('膝角度 (deg)', color='blue')
+    ax1.plot(frames, knee_angles, color='blue', label='膝角度')
+    ax1.tick_params(axis='y', labelcolor='blue')
+    ax1.grid(True)
+    
+    ax2 = ax1.twinx()
+    ax2.set_ylabel('体幹前傾 (deg)', color='red')
+    ax2.plot(frames, trunk_angles, color='red', linestyle='--', label='体幹前傾')
+    ax2.tick_params(axis='y', labelcolor='red')
+    
+    st.pyplot(fig)
