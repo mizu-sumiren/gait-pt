@@ -15,7 +15,8 @@ mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
 # --- ページ設定 ---
-st.set_page_config(page_title="統合歩行分析レポート (PT Pro)", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="AI歩行解析アプリ", page_icon="🛡️", layout="wide")
+
 # --- 画面設定：不要なメニューを非表示にする ---
 hide_streamlit_style = """
             <style>
@@ -27,20 +28,20 @@ hide_streamlit_style = """
             """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-st.title("🛡️ 歩行分析（信楽園バージョン） v2.0")
+st.title("🏃‍♂️ AI歩行ドック - Smart Gait Lab")
 st.markdown("身体機能評価 × AI歩行分析 × 自動レポート生成")
 
-# --- サイドバー：詳細な機能チェック ---
+# --- サイドバー：詳細な機能チェック（ここを復活させました！） ---
 st.sidebar.header("📋 測定データ入力")
 
 with st.sidebar.expander("1. 基本情報・問診", expanded=True):
-    client_name = st.text_input("氏名", "テスト 太郎 様") # レポート用に追加
+    client_name = st.text_input("氏名", "テスト 太郎 様")
     pain_areas = st.multiselect(
         "痛み・違和感のある部位",
         ["特になし", "首", "肩", "腰", "股関節(右)", "股関節(左)", "膝(右)", "膝(左)", "足首・足部"]
     )
 
-with st.sidebar.expander("2. 機能測定結果", expanded=True):
+with st.sidebar.expander("2. 身体機能測定結果", expanded=True):
     st.caption("対象者の数値を入力してください")
     col_s1, col_s2 = st.columns(2)
     with col_s1:
@@ -63,38 +64,26 @@ with st.sidebar.expander("2. 機能測定結果", expanded=True):
 
 # --- 関数：歩行指標（ケイデンス・歩幅）の計算 ---
 def analyze_gait_metrics(landmarks_history, fps):
-    """
-    動画全体のランドマーク履歴から歩数、ケイデンス、歩幅比率を算出
-    """
     if not landmarks_history:
         return None
 
-    # 足首間の距離（X軸方向の差分）の時系列データを取得
-    # Left Ankle: 27, Right Ankle: 28
     ankle_distances = []
-    
-    # 正規化のための下腿長（膝25-足首27）の平均サイズを取得（スケール補正用）
     shin_lengths = []
 
     for lms in landmarks_history:
-        # 座標取得 (MediaPipeは正規化座標 0.0-1.0 なのでそのまま距離計算可)
         la = np.array([lms[27].x, lms[27].y])
         ra = np.array([lms[28].x, lms[28].y])
         lk = np.array([lms[25].x, lms[25].y])
         
-        # 足首間距離 (歩幅の指標)
         dist = np.linalg.norm(la - ra)
         ankle_distances.append(dist)
         
-        # 下腿長 (左脚で代表)
         shin_len = np.linalg.norm(lk - la)
         shin_lengths.append(shin_len)
 
-    # 1. 歩数カウント（距離の極大値を検出）
-    # 簡易的なピーク検出: 前後より値が大きい点をカウント
     steps = 0
     peaks = []
-    threshold = np.mean(ankle_distances) # 平均以上の広がりを対象
+    threshold = np.mean(ankle_distances)
     
     for i in range(1, len(ankle_distances)-1):
         prev = ankle_distances[i-1]
@@ -104,14 +93,9 @@ def analyze_gait_metrics(landmarks_history, fps):
             steps += 1
             peaks.append(curr)
 
-    # 2. 時間計算
     duration_sec = len(landmarks_history) / fps
-    
-    # 3. ケイデンス (歩/分)
     cadence = (steps / duration_sec) * 60 if duration_sec > 0 else 0
     
-    # 4. 平均歩幅（正規化値: 歩幅 / 下腿長）
-    # これにより、カメラの距離に関係なく「脚の長さに対してどれくらい開いているか」がわかる
     avg_step_pixel = np.mean(peaks) if peaks else 0
     avg_shin_pixel = np.mean(shin_lengths) if shin_lengths else 1
     normalized_step_length = avg_step_pixel / avg_shin_pixel
@@ -129,32 +113,24 @@ def create_pdf(client_name, data, feedbacks, gait_metrics):
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
-    # --- フォント設定 ---
-    # 日本語フォント設定（環境によってパスが違うため、エラー回避用のTry-Except）
-    # 手元に .ttf (例: IPAexGothic.ttf) があればそれを読み込むのが確実です
     try:
-        # Streamlit Cloud等ではデフォルトフォントに制限があるため、ここでは英語フォントを基本にしつつ
-        # 可能なら日本語フォントを指定するロジック（※実運用時はフォントファイルを同梱推奨）
-        # 今回はデモのため、標準のHelveticaを使いますが、日本語は文字化けする可能性があります。
-        # ★実運用：同階層に 'IPAexGothic.ttf' を置いて以下のコメントアウトを外してください
+        # 日本語フォントがあれば設定（なければ英語で代用）
         # pdfmetrics.registerFont(TTFont('Japanese', 'IPAexGothic.ttf'))
         # c.setFont('Japanese', 12)
         c.setFont("Helvetica-Bold", 16)
         c.drawString(50, height - 50, f"Gait & Physical Analysis Report")
         c.setFont("Helvetica", 10)
-        c.drawString(50, height - 70, "Note: To display Japanese correctly, a .ttf font file is required on the server.")
+        c.drawString(50, height - 70, "Note: Japanese font required for full text support.")
     except:
         c.setFont("Helvetica-Bold", 16)
         c.drawString(50, height - 50, "Analysis Report")
 
-    # ヘッダー情報
     y = height - 100
     c.setFont("Helvetica", 12)
     c.drawString(50, y, f"Name: {client_name}")
     y -= 20
-    c.drawString(50, y, f"Date: 2025/12/02") # 本来は datetime.now()
+    c.drawString(50, y, f"Date: 2025/12/03")
     
-    # 歩行分析データ (Gait Metrics)
     y -= 40
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, y, "1. Gait Analysis (AI Video)")
@@ -166,7 +142,6 @@ def create_pdf(client_name, data, feedbacks, gait_metrics):
     else:
         c.drawString(60, y, "No video data analyzed.")
 
-    # 機能評価データ
     y -= 40
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, y, "2. Physical Functions")
@@ -178,62 +153,57 @@ def create_pdf(client_name, data, feedbacks, gait_metrics):
     c.drawString(60, y, f"Hip Flexion: L {data['hip_l']} / R {data['hip_r']}")
     c.drawString(250, y, f"FRT: {data['frt']}cm  /  FFD: {data['ffd']}cm")
 
-    # フィードバック
     y -= 40
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, y, "3. AI PT Feedback")
     c.setFont("Helvetica", 10)
     y -= 20
-    
-    # 日本語テキストをPDFに入れるのはフォント設定なしでは難しいため、
-    # 簡易的に英語かローマ字、あるいは「Web画面を参照」とするのが初期段階では安全です。
-    c.drawString(60, y, "Please refer to the application screen for detailed Japanese feedback.")
-    c.drawString(60, y-15, "(Japanese font configuration is needed for full text PDF)")
-
-    # 実際のテキスト流し込み（フォントがある前提）
-    # for msg in feedbacks:
-    #     y -= 20
-    #     c.drawString(60, y, f"- {msg[:40]}...") 
+    c.drawString(60, y, "Please refer to the app screen for detailed feedback.")
 
     c.showPage()
     c.save()
     buffer.seek(0)
     return buffer
 
-# --- ロジック関数：臨床推論エンジン (変更なし) ---
+# --- ロジック関数：臨床推論エンジン（身体機能×歩行の統合） ---
 def generate_clinical_feedback(data):
     feedback = []
+    
+    # データ展開
     pain = data['pain']
     toe_l, toe_r = data['toe_l'], data['toe_r']
     hip_l, hip_r = data['hip_l'], data['hip_r']
     ols_l, ols_r = data['ols_l'], data['ols_r']
     frt, ffd = data['frt'], data['ffd']
-    step = data['seat_step']
     
+    # 1. 足趾機能と歩行の蹴り出し
     avg_toe = (toe_l + toe_r) / 2
     if avg_toe < 15:
-        level = "機能低下" if avg_toe < 10 else "出力不足・硬さ"
-        feedback.append(f"**【足指：{level} (平均{avg_toe:.1f}%)】** 足指の力が基準以下です。蹴り出しが弱く、ペタペタ歩きの原因になります。")
+        feedback.append(f"**【足指機能低下 × 歩行推進力】**\n足指の力が弱いため（平均{avg_toe:.1f}%）、歩行時に地面を蹴る力が不足しています。これが**「ペタペタ歩き」や「歩幅の減少」**に直結しています。")
     
+    # 2. 股関節機能とつまずきリスク
     if hip_l < 1.0 or hip_r < 1.0:
         weak_side = "左" if hip_l < hip_r else "右"
-        feedback.append(f"**【股関節：振り出しの弱さ ({weak_side}側)】** 腸腰筋が弱く、つまずきリスクがあります。")
+        feedback.append(f"**【股関節筋力低下 × クリアランス】**\n{weak_side}側の腸腰筋出力が低下しています。足を振り出す際に高さが不足し、**「すり足」や「小さな段差でのつまずき」**のリスクが高い状態です。")
     
+    # 3. 左右差と代償動作
     diff_hip = abs(hip_l - hip_r)
     if diff_hip > 0.2:
         weaker = "左" if hip_l < hip_r else "右"
         stronger = "右" if hip_l < hip_r else "左"
-        feedback.append(f"**【左右差：{weaker}側の弱さと代償】** 弱い{weaker}側をかばい、反対側の{stronger}側に負担がかかっています。")
+        feedback.append(f"**【機能左右差 × 歩行リズム】**\n筋力バランスの崩れにより、歩行のリズムが不均等になっています。**弱い{weaker}側を早く接地させようとするため、反対側の{stronger}側に過度な負担**がかかっています。")
 
+    # 4. バランス機能とスウェイ
     if ols_l < 20 or ols_r < 20:
         unstable = "左" if ols_l < 20 else "右"
-        feedback.append(f"**【バランス：立脚期のふらつき ({unstable}側)】** 片脚立ち時間が短く、歩行時のスウェイ（横揺れ）につながります。")
+        feedback.append(f"**【立位バランス低下 × 重心動揺】**\n片脚立位が不安定（{unstable}側）です。歩行の立脚期に骨盤を安定させることができず、**「外側へのふらつき（ラテラルスウェイ）」**が生じています。")
 
+    # 5. 重心移動能力
     if frt < 30:
-        feedback.append(f"**【重心移動：前方不安 (FRT {frt}cm)】** 後方重心になっています。")
+        feedback.append(f"**【前方重心移動制限 × 後方重心】**\nFRTが{frt}cmと短縮しています。転倒への恐怖心から**「腰が引けた姿勢」**になりやすく、スムーズな体重移動が阻害されています。")
 
     if not feedback:
-        feedback.append("✅ **素晴らしい状態です！** 目立った機能低下は見当たりません。")
+        feedback.append("✅ **素晴らしい状態です！**\n身体機能と歩行姿勢の統合分析の結果、目立った崩れは見当たりません。現在の機能を維持しましょう。")
 
     return feedback
 
@@ -267,7 +237,6 @@ def process_video_and_analyze(uploaded_file):
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
-    # ランドマーク履歴を保存するリスト
     landmarks_history = []
 
     with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
@@ -284,16 +253,13 @@ def process_video_and_analyze(uploaded_file):
             image = draw_grid_and_skeleton(image, results)
             out.write(image)
             
-            # 分析用にランドマーク保存
             if results.pose_landmarks:
                 landmarks_history.append(results.pose_landmarks.landmark)
 
     cap.release()
     out.release()
     
-    # 歩行指標の計算
     metrics = analyze_gait_metrics(landmarks_history, fps)
-    
     return output_path, metrics
 
 # --- メインレイアウト ---
@@ -304,14 +270,11 @@ with col1:
 with col2:
     st.subheader("② 側面動画 (分析推奨)")
     file_side = st.file_uploader("Side View", type=['mp4', 'mov'], key="s")
-    st.caption("※歩行指標の算出には側面動画を使用します")
 
 if st.button("🚀 汎用分析を実行"):
-    # 処理実行
     path_f, metrics_f = process_video_and_analyze(file_front)
     path_s, metrics_s = process_video_and_analyze(file_side)
     
-    # メインの指標は「側面動画」から取る（歩幅が見やすいため）
     main_metrics = metrics_s if metrics_s else metrics_f
     
     st.markdown("---")
@@ -331,12 +294,12 @@ if st.button("🚀 汎用分析を実行"):
         st.subheader("📊 歩行AIメトリクス")
         if main_metrics:
             st.metric("ケイデンス (歩数/分)", f"{main_metrics['cadence']:.1f}", delta="標準: 110-120")
-            st.metric("歩幅比率 (歩幅/下腿長)", f"{main_metrics['step_ratio']:.2f}", help="1.0以上が理想的。低いと小刻み歩行。")
-            st.info(f"検出された歩数: {main_metrics['steps']}歩 / {main_metrics['duration']:.1f}秒")
+            st.metric("歩幅比率 (歩幅/下腿長)", f"{main_metrics['step_ratio']:.2f}", help="1.0以上が理想的")
+            st.info(f"検出: {main_metrics['steps']}歩 / {main_metrics['duration']:.1f}秒")
         else:
-            st.warning("動画から歩行データを抽出できませんでした。全身が映っているか確認してください。")
+            st.warning("動画からデータ抽出不可")
 
-    # 2. 自動フィードバック生成
+    # 2. 自動フィードバック生成（身体機能×歩行統合版）
     st.header("👨‍⚕️ AI理学療法士のフィードバック")
     
     input_data = {
@@ -352,7 +315,7 @@ if st.button("🚀 汎用分析を実行"):
     for msg in feedbacks:
         st.info(msg)
 
-    # 3. 推奨運動 & PDFダウンロード
+    # 3. 推奨運動 & ダウンロード
     st.subheader("🏋️‍♀️ 推奨運動 & レポート")
     rec_col1, rec_col2 = st.columns([3, 1])
     
@@ -365,7 +328,7 @@ if st.button("🚀 汎用分析を実行"):
             st.markdown("- **中殿筋・バランス**: 片脚立ち保持（1分間）")
         if frt < 30:
             st.markdown("- **動的バランス**: 重心移動練習")
-
+            
     with rec_col2:
         # PDF生成
         pdf_data = create_pdf(client_name, input_data, feedbacks, main_metrics)
