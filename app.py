@@ -15,15 +15,17 @@ mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
 # --- ページ設定 ---
-st.set_page_config(page_title="AI歩行解析アプリ", page_icon="🛡️", layout="wide")
+# initial_sidebar_state="expanded" を追加して、PCでは最初から開くように設定
+st.set_page_config(page_title="AI歩行解析アプリ", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
 
-# --- 画面設定：不要なメニューを非表示にする ---
+# --- 画面設定：修正箇所 ---
+# header {visibility: hidden;} を削除しました。これで左上の「>」ボタンが表示されます。
 hide_streamlit_style = """
             <style>
             #MainMenu {visibility: hidden;}
             footer {visibility: hidden;}
-            header {visibility: hidden;}
             .stDeployButton {display:none;}
+            /* header {visibility: hidden;} ←ここを削除しました */
             </style>
             """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
@@ -31,7 +33,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 st.title("🏃‍♂️ AI歩行ドック - Smart Gait Lab")
 st.markdown("身体機能評価 × AI歩行分析 × 自動レポート生成")
 
-# --- サイドバー：詳細な機能チェック（ここを復活させました！） ---
+# --- サイドバー：詳細な機能チェック ---
 st.sidebar.header("📋 測定データ入力")
 
 with st.sidebar.expander("1. 基本情報・問診", expanded=True):
@@ -115,8 +117,6 @@ def create_pdf(client_name, data, feedbacks, gait_metrics):
 
     try:
         # 日本語フォントがあれば設定（なければ英語で代用）
-        # pdfmetrics.registerFont(TTFont('Japanese', 'IPAexGothic.ttf'))
-        # c.setFont('Japanese', 12)
         c.setFont("Helvetica-Bold", 16)
         c.drawString(50, height - 50, f"Gait & Physical Analysis Report")
         c.setFont("Helvetica", 10)
