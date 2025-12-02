@@ -15,12 +15,12 @@ mp_drawing = mp.solutions.drawing_utils
 # --- ページ設定 ---
 st.set_page_config(page_title="AI歩行解析アプリ Pro", page_icon="🏃‍♂️", layout="wide")
 
-# --- CSS設定 ---
+# --- CSS設定（修正版：上のバーを表示させてサイドバーボタンを復活！） ---
 hide_streamlit_style = """
             <style>
             #MainMenu {visibility: hidden;}
             footer {visibility: hidden;}
-            header {visibility: hidden;}
+            /* header {visibility: hidden;} ←ここを削除しました */
             .stDeployButton {display:none;}
             </style>
             """
