@@ -29,7 +29,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 st.title("🏃‍♂️ AI歩行ドック Pro - Clinical Gait Lab")
 st.markdown("姿勢制御(頭部・体幹) × 歩行の質(すり足・伸展) × 身体機能")
 
-# --- サイドバー入力 (ここが復活します！) ---
+# --- サイドバー入力 ---
 st.sidebar.header("📋 測定データ入力")
 with st.sidebar.expander("1. 基本情報・問診", expanded=True):
     client_name = st.text_input("氏名", "テスト 太郎 様")
@@ -55,7 +55,6 @@ with st.sidebar.expander("2. 身体機能測定結果", expanded=True):
 
 # --- 幾何学計算関数 ---
 def calculate_angle_3points(a, b, c):
-    """3点の角度（関節角度など）"""
     a, b, c = np.array(a), np.array(b), np.array(c)
     radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
     angle = np.abs(radians*180.0/np.pi)
@@ -63,22 +62,19 @@ def calculate_angle_3points(a, b, c):
     return angle
 
 def calculate_slope(a, b):
-    """2点の水平に対する傾き（肩・骨盤・頭など）"""
     if a is None or b is None: return 0
     dy = a[1] - b[1]
     dx = a[0] - b[0]
     angle = math.degrees(math.atan2(dy, dx))
-    return angle # 正負で左右の傾きを判定
+    return angle
 
 def calculate_vertical_angle(a, b):
-    """2点の垂直に対する傾き（体幹前傾など）"""
     if a is None or b is None: return 0
-    dy = b[1] - a[1] # bが下(腰)、aが上(肩)想定
+    dy = b[1] - a[1]
     dx = b[0] - a[0]
-    # 垂直(90度)からのズレを計算
     angle_rad = math.atan2(dx, dy) 
     angle_deg = math.degrees(angle_rad)
-    return angle_deg # 正なら前傾、負なら後傾
+    return angle_deg
 
 # --- 正面動画分析ロジック ---
 def analyze_front_view(landmarks_history):
@@ -89,29 +85,21 @@ def analyze_front_view(landmarks_history):
     hip_centers_x = []
     
     for lms in landmarks_history:
-        # 1. 頭部の傾き (耳: 7左, 8右)
         l_ear = [lms[7].x, lms[7].y]
         r_ear = [lms[8].x, lms[8].y]
         head_tilts.append(calculate_slope(l_ear, r_ear))
         
-        # 2. 肩の下がり (肩: 11左, 12右)
         l_sh = [lms[11].x, lms[11].y]
         r_sh = [lms[12].x, lms[12].y]
         shoulder_slopes.append(calculate_slope(l_sh, r_sh))
         
-        # 3. 骨盤スウェイ (腰: 23左, 24右の中点X)
         mid_hip_x = (lms[23].x + lms[24].x) / 2
         hip_centers_x.append(mid_hip_x)
         
-    # 集計
-    avg_head_tilt = np.mean(np.abs(head_tilts))
-    avg_shoulder_slope = np.mean(shoulder_slopes)
-    sway_range = max(hip_centers_x) - min(hip_centers_x)
-    
     return {
-        "head_tilt": avg_head_tilt,
-        "shoulder_slope": avg_shoulder_slope,
-        "sway_amplitude": sway_range
+        "head_tilt": np.mean(np.abs(head_tilts)),
+        "shoulder_slope": np.mean(shoulder_slopes),
+        "sway_amplitude": max(hip_centers_x) - min(hip_centers_x)
     }
 
 # --- 側面動画分析ロジック ---
@@ -131,21 +119,17 @@ def analyze_side_view(landmarks_history, fps):
         ra = np.array([lms[28].x, lms[28].y])
         lk = np.array([lms[25].x, lms[25].y])
         
-        # 歩幅・下腿長
         ankle_distances.append(np.linalg.norm(la - ra))
         shin_lengths.append(np.linalg.norm(lk - la))
         
-        # 1. 体幹前傾
         trunk_angle = calculate_vertical_angle([lms[11].x, lms[11].y], [lms[23].x, lms[23].y])
         trunk_leans.append(trunk_angle)
         
-        # 2. 股関節伸展
         l_ang = calculate_angle_3points([lms[11].x, lms[11].y], [lms[23].x, lms[23].y], [lms[25].x, lms[25].y])
         r_ang = calculate_angle_3points([lms[12].x, lms[12].y], [lms[24].x, lms[24].y], [lms[26].x, lms[26].y])
         if l_ang > hip_ext_l_max: hip_ext_l_max = l_ang
         if r_ang > hip_ext_r_max: hip_ext_r_max = r_ang
         
-        # 3. 足の高さ (すり足)
         ankle_heights.append(lms[27].y)
 
     steps = 0
@@ -160,63 +144,46 @@ def analyze_side_view(landmarks_history, fps):
     cadence = (steps / duration) * 60 if duration > 0 else 0
     step_ratio = (np.mean(peaks) / np.mean(shin_lengths)) if peaks and shin_lengths else 0
     
-    ankle_vertical_range = max(ankle_heights) - min(ankle_heights)
-    
     return {
         "cadence": cadence,
         "step_ratio": step_ratio,
         "max_hip_ext_l": hip_ext_l_max,
         "max_hip_ext_r": hip_ext_r_max,
         "avg_trunk_lean": np.mean(trunk_leans),
-        "foot_clearance_score": ankle_vertical_range
+        "foot_clearance_score": max(ankle_heights) - min(ankle_heights)
     }
 
 # --- フィードバック生成 ---
 def generate_clinical_feedback(data, front_metrics, side_metrics):
     feedback = []
     
-    # A. 正面からの分析
     if front_metrics:
         if front_metrics['head_tilt'] > 3.0:
-            feedback.append("⚠️ **【頭部の傾き】** 正面から見て頭が傾いています。首・肩こりの原因や、バランス感覚の左右差が疑われます。")
-        
+            feedback.append("⚠️ **【頭部の傾き】** 正面から見て頭が傾いています。")
         slope = front_metrics['shoulder_slope']
         if abs(slope) > 3.0:
             side = "右" if slope > 0 else "左"
-            feedback.append(f"⚠️ **【肩の下がり ({side}下がり)】** 肩のラインが水平ではありません。体幹の側屈や痛みによる逃避姿勢の可能性があります。")
-            
+            feedback.append(f"⚠️ **【肩の下がり ({side}下がり)】** 肩のラインが水平ではありません。")
         if front_metrics['sway_amplitude'] > 0.15:
-            feedback.append("⚠️ **【骨盤のラテラルスウェイ】** 歩行時に骨盤が左右に大きく揺れています。中殿筋の弱化により、支えきれていません。")
+            feedback.append("⚠️ **【骨盤のスウェイ】** 歩行時に骨盤が左右に大きく揺れています。")
 
-    # B. 側面からの分析
     if side_metrics:
         if abs(side_metrics['avg_trunk_lean']) > 10.0:
-            feedback.append("⚠️ **【体幹の前傾姿勢】** 歩行中、身体が前に倒れています。転倒への恐怖心や背筋・腹筋の低下が疑われます。")
-        
+            feedback.append("⚠️ **【体幹の前傾】** 身体が前に倒れています。")
         if side_metrics['foot_clearance_score'] < 0.05:
-            feedback.append("⚠️ **【すり足・クリアランス低下】** 足があまり上がっていません。つま先が引っかかりやすく、転倒リスクが高い状態です。")
-
+            feedback.append("⚠️ **【すり足気味】** 足があまり上がっていません。つまずきに注意です。")
+        
         ext_l = side_metrics['max_hip_ext_l']
         ext_r = side_metrics['max_hip_ext_r']
-        diff_ext = abs(ext_l - ext_r)
-        
-        if diff_ext > 5.0:
+        if abs(ext_l - ext_r) > 5.0:
             weaker = "左" if ext_l < ext_r else "右"
-            feedback.append(f"⚠️ **【股関節伸展の左右差 ({weaker}制限)】** {weaker}足の蹴り出しが弱く、伸びていません。そけい部の硬さが原因で、歩幅が短くなっています。")
+            feedback.append(f"⚠️ **【股関節伸展の左右差 ({weaker}制限)】** {weaker}足の蹴り出しが弱くなっています。")
 
-        if side_metrics['step_ratio'] < 1.2:
-             feedback.append("ℹ️ **【小刻み歩行】** 歩幅が狭くなっています。活動量維持のため、大股を意識しましょう。")
-
-    # C. 身体機能データ
     if (data['toe_l'] + data['toe_r'])/2 < 20:
-        feedback.append("ℹ️ **【足指把持力低下】** 地面を掴む力が弱く、蹴り出し不足（すり足）の一因です。")
+        feedback.append("ℹ️ **【足指機能低下】** 地面を掴む力が弱めです。")
     
-    hip_diff = abs(data['hip_l'] - data['hip_r'])
-    if hip_diff > 0.15:
-        feedback.append("ℹ️ **【股関節筋力の左右差】** 筋力差が歩行の左右への揺れ（スウェイ）を助長しています。")
-
     if not feedback:
-        feedback.append("✅ **素晴らしい歩行状態です！** 姿勢の崩れも少なく、機能的にも安定しています。")
+        feedback.append("✅ **良好な歩行状態です！**")
 
     return feedback
 
@@ -245,7 +212,6 @@ def process_video(uploaded_file, view_type):
             image.flags.writeable = True
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             
-            # グリッド描画
             cv2.line(image, (width//2, 0), (width//2, height), (0, 255, 255), 1) 
             if results.pose_landmarks:
                 mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
@@ -255,11 +221,7 @@ def process_video(uploaded_file, view_type):
     cap.release()
     out.release()
     
-    if view_type == 'front':
-        metrics = analyze_front_view(landmarks_history)
-    else:
-        metrics = analyze_side_view(landmarks_history, fps)
-        
+    metrics = analyze_front_view(landmarks_history) if view_type == 'front' else analyze_side_view(landmarks_history, fps)
     return output_path, metrics
 
 def create_pdf(client_name, data, feedbacks, f_metrics, s_metrics):
@@ -268,41 +230,13 @@ def create_pdf(client_name, data, feedbacks, f_metrics, s_metrics):
     width, height = A4
     
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, height - 50, "Clinical Gait Analysis Report")
+    c.drawString(50, height - 50, "Gait Analysis Report")
     c.setFont("Helvetica", 12)
-    c.drawString(50, height - 80, f"Name: {client_name}   Date: 2025/12/03")
+    c.drawString(50, height - 80, f"Name: {client_name}")
 
     y = height - 120
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "1. Front View Analysis (Posture)")
-    y -= 20
-    c.setFont("Helvetica", 10)
-    if f_metrics:
-        c.drawString(60, y, f"Head Tilt: {f_metrics['head_tilt']:.1f} deg")
-        c.drawString(250, y, f"Shoulder Slope: {f_metrics['shoulder_slope']:.1f} deg")
-        y -= 15
-        c.drawString(60, y, f"Pelvic Sway (Amp): {f_metrics['sway_amplitude']:.3f} (ratio)")
-    else:
-        c.drawString(60, y, "No front video data.")
-
-    y -= 30
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "2. Side View Analysis (Gait Quality)")
-    y -= 20
-    c.setFont("Helvetica", 10)
-    if s_metrics:
-        c.drawString(60, y, f"Step Ratio: {s_metrics['step_ratio']:.2f}")
-        c.drawString(250, y, f"Trunk Lean: {s_metrics['avg_trunk_lean']:.1f} deg")
-        y -= 15
-        c.drawString(60, y, f"Hip Ext: L {s_metrics['max_hip_ext_l']:.0f} / R {s_metrics['max_hip_ext_r']:.0f}")
-        c.drawString(250, y, f"Clearance Score: {s_metrics['foot_clearance_score']:.3f}")
-
-    y -= 30
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, y, "3. Clinical Feedback Summary")
-    y -= 20
-    c.drawString(60, y, "Please refer to the app screen for detailed Japanese feedback.")
-
+    c.drawString(50, y, "See app for details.")
+    
     c.showPage()
     c.save()
     buffer.seek(0)
@@ -311,10 +245,10 @@ def create_pdf(client_name, data, feedbacks, f_metrics, s_metrics):
 # --- メイン処理 ---
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("① 正面動画 (姿勢・スウェイ)")
+    st.subheader("① 正面動画")
     file_front = st.file_uploader("Front View", type=['mp4', 'mov'], key="f")
 with col2:
-    st.subheader("② 側面動画 (歩行の質)")
+    st.subheader("② 側面動画")
     file_side = st.file_uploader("Side View", type=['mp4', 'mov'], key="s")
 
 if st.button("🚀 臨床詳細分析を実行"):
@@ -329,62 +263,40 @@ if st.button("🚀 臨床詳細分析を実行"):
     with v_c2: 
         if path_s: st.video(path_s)
         
-    st.subheader("📊 動作解析データ")
+    st.subheader("📊 解析データ")
     d_c1, d_c2 = st.columns(2)
-    
     with d_c1:
-        st.markdown("##### 正面：姿勢制御")
+        st.markdown("##### 正面データ")
         if metrics_f:
-            st.metric("頭部の傾き", f"{metrics_f['head_tilt']:.1f}°")
-            st.metric("肩の傾き", f"{metrics_f['shoulder_slope']:.1f}°")
-            st.metric("骨盤スウェイ", f"{metrics_f['sway_amplitude']:.2f}")
-        else: st.caption("正面動画なし")
-            
+            st.metric("頭部傾き", f"{metrics_f['head_tilt']:.1f}°")
+            st.metric("肩傾き", f"{metrics_f['shoulder_slope']:.1f}°")
+            st.metric("スウェイ", f"{metrics_f['sway_amplitude']:.2f}")
     with d_c2:
-        st.markdown("##### 側面：歩行の質")
+        st.markdown("##### 側面データ")
         if metrics_s:
             st.metric("体幹前傾", f"{metrics_s['avg_trunk_lean']:.1f}°")
-            st.metric("すり足指数", f"{metrics_s['foot_clearance_score']:.2f}")
-            c_l, c_r = st.columns(2)
-            with c_l: st.metric("股伸展(L)", f"{int(metrics_s['max_hip_ext_l'])}°")
-            with c_r: st.metric("股伸展(R)", f"{int(metrics_s['max_hip_ext_r'])}°")
-        else: st.caption("側面動画なし")
+            st.metric("伸展(L)", f"{int(metrics_s['max_hip_ext_l'])}°")
+            st.metric("伸展(R)", f"{int(metrics_s['max_hip_ext_r'])}°")
 
-    st.header("👨‍⚕️ AI理学療法士のフィードバック (Clinical)")
+    st.header("👨‍⚕️ AI理学療法士フィードバック")
     input_data = {
-        'pain': pain_areas,
         'toe_l': toe_grip_l, 'toe_r': toe_grip_r,
         'hip_l': hip_flex_l, 'hip_r': hip_flex_r,
         'ols_l': one_leg_l, 'ols_r': one_leg_r,
     }
     
     feedbacks = generate_clinical_feedback(input_data, metrics_f, metrics_s)
-    
     for msg in feedbacks:
         if "⚠️" in msg: st.error(msg)
-        elif "ℹ️" in msg: st.warning(msg)
         else: st.info(msg)
 
-    st.subheader("📥 レポート保存")
-    
+    st.subheader("📥 保存")
     rec_col1, rec_col2 = st.columns([3, 1])
-    
     with rec_col2:
-        # PDF生成
         pdf_data = create_pdf(client_name, input_data, feedbacks, metrics_f, metrics_s)
-        st.download_button(
-            label="📄 PDFレポート",
-            data=pdf_data,
-            file_name="clinical_report.pdf",
-            mime="application/pdf"
-        )
-        
+        st.download_button("📄 PDF DL", pdf_data, "report.pdf", "application/pdf")
         st.markdown("---")
-        
         if path_f:
-            with open(path_f, 'rb') as v: 
-                st.download_button("🎥 正面動画保存", v, "front.mp4", "video/mp4")
-                
+            with open(path_f, 'rb') as v: st.download_button("🎥 正面動画 DL", v, "front.mp4", "video/mp4")
         if path_s:
-            with open(path_s, 'rb') as v: 
-                st.download_button("🎥 側面動画保存", v, "side.mp4", "video/mp4")
+            with open(path_s, 'rb') as v: st.download_button("🎥 側面動画 DL", v, "side.mp4", "video/mp4")
