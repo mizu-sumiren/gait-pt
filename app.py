@@ -29,7 +29,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 st.title("🏃‍♂️ AI歩行ドック Pro - Clinical Gait Lab")
 st.markdown("姿勢制御(頭部・体幹) × 歩行の質(すり足・伸展) × 身体機能")
 
-# --- サイドバー入力 ---
+# --- サイドバー入力 (ここが復活します！) ---
 st.sidebar.header("📋 測定データ入力")
 with st.sidebar.expander("1. 基本情報・問診", expanded=True):
     client_name = st.text_input("氏名", "テスト 太郎 様")
@@ -78,7 +78,7 @@ def calculate_vertical_angle(a, b):
     # 垂直(90度)からのズレを計算
     angle_rad = math.atan2(dx, dy) 
     angle_deg = math.degrees(angle_rad)
-    return angle_deg # 正なら前傾、負なら後傾（座標系によるが絶対値で見る）
+    return angle_deg # 正なら前傾、負なら後傾
 
 # --- 正面動画分析ロジック ---
 def analyze_front_view(landmarks_history):
@@ -105,8 +105,8 @@ def analyze_front_view(landmarks_history):
         
     # 集計
     avg_head_tilt = np.mean(np.abs(head_tilts))
-    avg_shoulder_slope = np.mean(shoulder_slopes) # 符号維持（左右どちらが低いか見るため）
-    sway_range = max(hip_centers_x) - min(hip_centers_x) # スウェイの全振幅
+    avg_shoulder_slope = np.mean(shoulder_slopes)
+    sway_range = max(hip_centers_x) - min(hip_centers_x)
     
     return {
         "head_tilt": avg_head_tilt,
@@ -121,7 +121,7 @@ def analyze_side_view(landmarks_history, fps):
     ankle_distances = []
     shin_lengths = []
     trunk_leans = []
-    ankle_heights = [] # すり足判定用
+    ankle_heights = []
     
     hip_ext_l_max = 0
     hip_ext_r_max = 0
@@ -135,8 +135,7 @@ def analyze_side_view(landmarks_history, fps):
         ankle_distances.append(np.linalg.norm(la - ra))
         shin_lengths.append(np.linalg.norm(lk - la))
         
-        # 1. 体幹前傾 (肩11/12 - 腰23/24) ※平均的な側面を見る
-        # 簡易的に左側(11-23)で計算
+        # 1. 体幹前傾
         trunk_angle = calculate_vertical_angle([lms[11].x, lms[11].y], [lms[23].x, lms[23].y])
         trunk_leans.append(trunk_angle)
         
@@ -146,11 +145,9 @@ def analyze_side_view(landmarks_history, fps):
         if l_ang > hip_ext_l_max: hip_ext_l_max = l_ang
         if r_ang > hip_ext_r_max: hip_ext_r_max = r_ang
         
-        # 3. 足の高さ (すり足) - Y座標は下が大きいことに注意
-        # 足首のY座標を記録（低いほど地面に近い）
-        ankle_heights.append(lms[27].y) # 左足首で代表計測
+        # 3. 足の高さ (すり足)
+        ankle_heights.append(lms[27].y)
 
-    # 歩数・ケイデンス
     steps = 0
     peaks = []
     threshold = np.mean(ankle_distances)
@@ -163,8 +160,6 @@ def analyze_side_view(landmarks_history, fps):
     cadence = (steps / duration) * 60 if duration > 0 else 0
     step_ratio = (np.mean(peaks) / np.mean(shin_lengths)) if peaks and shin_lengths else 0
     
-    # すり足指標（足首の上下動の幅）
-    # 幅が小さい＝足を上げていない＝すり足
     ankle_vertical_range = max(ankle_heights) - min(ankle_heights)
     
     return {
@@ -173,40 +168,34 @@ def analyze_side_view(landmarks_history, fps):
         "max_hip_ext_l": hip_ext_l_max,
         "max_hip_ext_r": hip_ext_r_max,
         "avg_trunk_lean": np.mean(trunk_leans),
-        "foot_clearance_score": ankle_vertical_range # 正規化していない簡易値だが相対評価に使える
+        "foot_clearance_score": ankle_vertical_range
     }
 
-# --- フィードバック生成 (完全版) ---
+# --- フィードバック生成 ---
 def generate_clinical_feedback(data, front_metrics, side_metrics):
     feedback = []
     
-    # A. 正面からの分析 (姿勢・スウェイ)
+    # A. 正面からの分析
     if front_metrics:
-        # 頭部
-        if front_metrics['head_tilt'] > 3.0: # 3度以上
-            feedback.append("⚠️ **【頭部の傾き】** 正面から見て頭が傾いています。首・肩こりの原因や、前庭機能（バランス感覚）の左右差が疑われます。")
+        if front_metrics['head_tilt'] > 3.0:
+            feedback.append("⚠️ **【頭部の傾き】** 正面から見て頭が傾いています。首・肩こりの原因や、バランス感覚の左右差が疑われます。")
         
-        # 肩
         slope = front_metrics['shoulder_slope']
         if abs(slope) > 3.0:
-            side = "右" if slope > 0 else "左" # 計算式によるが、傾きで判定
-            feedback.append(f"⚠️ **【肩の下がり ({side}下がり)】** 肩のラインが水平ではありません。体幹の側屈や、荷物の持ち癖、あるいは痛みによる逃避姿勢の可能性があります。")
+            side = "右" if slope > 0 else "左"
+            feedback.append(f"⚠️ **【肩の下がり ({side}下がり)】** 肩のラインが水平ではありません。体幹の側屈や痛みによる逃避姿勢の可能性があります。")
             
-        # スウェイ
-        if front_metrics['sway_amplitude'] > 0.15: # 閾値は経験則(画面比率)
-            feedback.append("⚠️ **【骨盤のラテラルスウェイ】** 歩行時に骨盤が左右に大きく揺れています。中殿筋（お尻の外側）の弱化により、片足立ちの瞬間に支えきれていません。")
+        if front_metrics['sway_amplitude'] > 0.15:
+            feedback.append("⚠️ **【骨盤のラテラルスウェイ】** 歩行時に骨盤が左右に大きく揺れています。中殿筋の弱化により、支えきれていません。")
 
-    # B. 側面からの分析 (効率・クリアランス)
+    # B. 側面からの分析
     if side_metrics:
-        # 体幹前傾
         if abs(side_metrics['avg_trunk_lean']) > 10.0:
-            feedback.append("⚠️ **【体幹の前傾姿勢】** 歩行中、身体が前に倒れています。転倒への恐怖心、または背筋・腹筋の低下、脊柱の変形（円背）が影響しています。視線が下がりやすくなります。")
+            feedback.append("⚠️ **【体幹の前傾姿勢】** 歩行中、身体が前に倒れています。転倒への恐怖心や背筋・腹筋の低下が疑われます。")
         
-        # すり足 (クリアランス)
-        if side_metrics['foot_clearance_score'] < 0.05: # 足首があまり上下していない
-            feedback.append("⚠️ **【すり足・クリアランス低下】** 足があまり上がっていません。遊脚期につま先が地面に引っかかりやすく、転倒の最大リスク因子です。腸腰筋での引き上げを意識しましょう。")
+        if side_metrics['foot_clearance_score'] < 0.05:
+            feedback.append("⚠️ **【すり足・クリアランス低下】** 足があまり上がっていません。つま先が引っかかりやすく、転倒リスクが高い状態です。")
 
-        # 股関節伸展 & 左右差
         ext_l = side_metrics['max_hip_ext_l']
         ext_r = side_metrics['max_hip_ext_r']
         diff_ext = abs(ext_l - ext_r)
@@ -216,7 +205,7 @@ def generate_clinical_feedback(data, front_metrics, side_metrics):
             feedback.append(f"⚠️ **【股関節伸展の左右差 ({weaker}制限)】** {weaker}足の蹴り出しが弱く、伸びていません。そけい部の硬さが原因で、歩幅が短くなっています。")
 
         if side_metrics['step_ratio'] < 1.2:
-             feedback.append("ℹ️ **【小刻み歩行】** 歩幅が狭くなっています。安全重視の結果かもしれませんが、活動量維持のためにはもう少し大股を意識したいところです。")
+             feedback.append("ℹ️ **【小刻み歩行】** 歩幅が狭くなっています。活動量維持のため、大股を意識しましょう。")
 
     # C. 身体機能データ
     if (data['toe_l'] + data['toe_r'])/2 < 20:
@@ -227,11 +216,11 @@ def generate_clinical_feedback(data, front_metrics, side_metrics):
         feedback.append("ℹ️ **【股関節筋力の左右差】** 筋力差が歩行の左右への揺れ（スウェイ）を助長しています。")
 
     if not feedback:
-        feedback.append("✅ **素晴らしい歩行状態です！** 姿勢の崩れも少なく、機能的にも安定しています。この状態を維持しましょう。")
+        feedback.append("✅ **素晴らしい歩行状態です！** 姿勢の崩れも少なく、機能的にも安定しています。")
 
     return feedback
 
-# --- 共通処理（動画・PDF） ---
+# --- 共通処理 ---
 def process_video(uploaded_file, view_type):
     if uploaded_file is None: return None, None
     tfile = tempfile.NamedTemporaryFile(delete=False) 
@@ -266,7 +255,6 @@ def process_video(uploaded_file, view_type):
     cap.release()
     out.release()
     
-    # 視点に応じた分析を実行
     if view_type == 'front':
         metrics = analyze_front_view(landmarks_history)
     else:
@@ -330,20 +318,17 @@ with col2:
     file_side = st.file_uploader("Side View", type=['mp4', 'mov'], key="s")
 
 if st.button("🚀 臨床詳細分析を実行"):
-    # 分析実行
     path_f, metrics_f = process_video(file_front, 'front')
     path_s, metrics_s = process_video(file_side, 'side')
     
     st.markdown("---")
     
-    # 動画表示
     v_c1, v_c2 = st.columns(2)
     with v_c1: 
         if path_f: st.video(path_f)
     with v_c2: 
         if path_s: st.video(path_s)
         
-    # 数値結果表示
     st.subheader("📊 動作解析データ")
     d_c1, d_c2 = st.columns(2)
     
@@ -352,20 +337,19 @@ if st.button("🚀 臨床詳細分析を実行"):
         if metrics_f:
             st.metric("頭部の傾き", f"{metrics_f['head_tilt']:.1f}°")
             st.metric("肩の傾き", f"{metrics_f['shoulder_slope']:.1f}°")
-            st.metric("骨盤スウェイ", f"{metrics_f['sway_amplitude']:.2f}", help="値が大きいほど横揺れが強い")
+            st.metric("骨盤スウェイ", f"{metrics_f['sway_amplitude']:.2f}")
         else: st.caption("正面動画なし")
             
     with d_c2:
         st.markdown("##### 側面：歩行の質")
         if metrics_s:
             st.metric("体幹前傾", f"{metrics_s['avg_trunk_lean']:.1f}°")
-            st.metric("すり足指数", f"{metrics_s['foot_clearance_score']:.2f}", help="値が小さいほど足が上がっていない")
+            st.metric("すり足指数", f"{metrics_s['foot_clearance_score']:.2f}")
             c_l, c_r = st.columns(2)
             with c_l: st.metric("股伸展(L)", f"{int(metrics_s['max_hip_ext_l'])}°")
             with c_r: st.metric("股伸展(R)", f"{int(metrics_s['max_hip_ext_r'])}°")
         else: st.caption("側面動画なし")
 
-    # フィードバック
     st.header("👨‍⚕️ AI理学療法士のフィードバック (Clinical)")
     input_data = {
         'pain': pain_areas,
@@ -381,16 +365,26 @@ if st.button("🚀 臨床詳細分析を実行"):
         elif "ℹ️" in msg: st.warning(msg)
         else: st.info(msg)
 
-    # 保存ボタン
     st.subheader("📥 レポート保存")
-    pdf_data = create_pdf(client_name, input_data, feedbacks, metrics_f, metrics_s)
-    st.download_button("📄 PDFレポート", pdf_data, "clinical_report.pdf", "application/pdf")
     
-    st.markdown("---")
-    c_dl1, c_dl2 = st.columns(2)
-    with c_dl1:
+    rec_col1, rec_col2 = st.columns([3, 1])
+    
+    with rec_col2:
+        # PDF生成
+        pdf_data = create_pdf(client_name, input_data, feedbacks, metrics_f, metrics_s)
+        st.download_button(
+            label="📄 PDFレポート",
+            data=pdf_data,
+            file_name="clinical_report.pdf",
+            mime="application/pdf"
+        )
+        
+        st.markdown("---")
+        
         if path_f:
-            with open(path_f, 'rb') as v: st.download_button("🎥 正面動画保存", v, "front.mp4", "video/mp4")
-    with c_dl2:
+            with open(path_f, 'rb') as v: 
+                st.download_button("🎥 正面動画保存", v, "front.mp4", "video/mp4")
+                
         if path_s:
-            with open(path_s, 'rb') as v: st.download_button("🎥 側面動画保存", v, "side.mp4", "video/mp4")
+            with open(path_s, 'rb') as v: 
+                st.download_button("🎥 側面動画保存", v, "side.mp4", "video/mp4")
