@@ -39,7 +39,7 @@ if "歩行" in app_mode:
     st.markdown(f"モード: {app_mode}")
 else:
     st.title("📸 AI姿勢分析ラボ")
-    st.markdown("立位・座位の静止画アライメント評価")
+    st.markdown("正面(アライメント) × 側面(猫背・FHP) の同時評価")
 
 # --- 変数初期化 ---
 toe_grip_l = toe_grip_r = 0
@@ -82,83 +82,81 @@ def calculate_slope(a, b):
     return math.degrees(math.atan2(a[1]-b[1], a[0]-b[0]))
 
 def calculate_vertical_angle(a, b):
-    # 垂直線からの角度（前傾・後傾）
     if a is None or b is None: return 0
     return math.degrees(math.atan2(b[0]-a[0], b[1]-a[1]))
 
-# --- 静止画分析ロジック (NEW!) ---
-def analyze_static_image(image, posture_type):
+# --- 静止画分析ロジック (アップデート版) ---
+def analyze_static_image(image, view, posture_type):
     with mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5) as pose:
         results = pose.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        
         if not results.pose_landmarks: return image, None
 
         h, w, _ = image.shape
         lms = results.pose_landmarks.landmark
-        
-        # 描画
         annotated_image = image.copy()
+        
+        # グリッド線
+        cv2.line(annotated_image, (w//2, 0), (w//2, h), (0, 255, 255), 2)
         mp_drawing.draw_landmarks(annotated_image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
         
-        # 座標取得ヘルパー
         def get_p(idx): return [lms[idx].x * w, lms[idx].y * h]
-        
         metrics = {}
-        
-        # --- 共通評価: 頭部・肩の傾き (正面想定) ---
-        l_ear, r_ear = get_p(7), get_p(8)
-        l_sh, r_sh = get_p(11), get_p(12)
-        metrics['head_tilt'] = calculate_slope(l_ear, r_ear)
-        metrics['shoulder_slope'] = calculate_slope(l_sh, r_sh)
 
-        # --- 側面評価用データの計算 ---
-        # 1. 耳と肩の位置関係 (Forward Head Posture)
-        # 耳(7)が肩(11)よりどれくらい前にあるか (X座標の差)
-        # 正規化のため、肩幅か身長に対する比率で出すのが理想だが、ここでは簡易的にピクセル差を見る
-        ear_x = (lms[7].x + lms[8].x) / 2
-        shoulder_x = (lms[11].x + lms[12].x) / 2
-        metrics['forward_head_score'] = (shoulder_x - ear_x) * 100 # 正の値なら耳が前
-        
-        # 2. 体幹の前傾
-        metrics['trunk_lean'] = calculate_vertical_angle(l_sh, get_p(23))
+        # --- A. 正面写真の分析 ---
+        if view == "front":
+            # 1. 頭の傾き
+            metrics['head_tilt'] = calculate_slope(get_p(7), get_p(8))
+            # 2. 肩の傾き
+            metrics['shoulder_slope'] = calculate_slope(get_p(11), get_p(12))
+            # 3. 骨盤の傾き (簡易: 23-24)
+            metrics['hip_slope'] = calculate_slope(get_p(23), get_p(24))
 
-        # --- 立位・座位ごとの特異的評価 ---
-        if posture_type == "立位 (Standing)":
-            # 膝の伸展度 (11-23-25) -> 立位なら180度近いか
-            hip = get_p(23); knee = get_p(25); ankle = get_p(27)
-            metrics['knee_angle'] = calculate_angle(hip, knee, ankle)
-            # 重心線 (耳-肩-腰-膝-外果) のズレチェックは簡易的に「耳とくるぶしのX差」で
-            metrics['plumb_line_dev'] = (lms[7].x - lms[27].x) * 100
-
-        elif posture_type == "座位 (Sitting)":
-            # 股関節屈曲角度 (11-23-25) -> 90度が理想
-            sh = get_p(11); hip = get_p(23); knee = get_p(25)
-            metrics['hip_angle'] = calculate_angle(sh, hip, knee)
-            # 膝角度 -> 90度が理想
-            ankle = get_p(27)
-            metrics['knee_angle'] = calculate_angle(hip, knee, ankle)
+        # --- B. 側面写真の分析 ---
+        elif view == "side":
+            # 1. スマホ首 (耳7と肩11のX差)
+            # 画面右向きか左向きかで符号が変わるため絶対値で距離を見る
+            # ここでは「耳が肩より前にあるか」を判定したい
+            ear_x = (lms[7].x + lms[8].x) / 2 # 両耳の中点（横顔なら片耳だが安全策）
+            shoulder_x = (lms[11].x + lms[12].x) / 2
+            # 画像の幅に対する割合(%)で算出
+            metrics['forward_head_score'] = (ear_x - shoulder_x) * 100 
+            
+            # 2. 体幹の前傾
+            metrics['trunk_lean'] = calculate_vertical_angle(get_p(11), get_p(23))
+            
+            # 3. 膝・股関節 (姿勢タイプ別)
+            if posture_type == "立位 (Standing)":
+                metrics['knee_angle'] = calculate_angle(get_p(23), get_p(25), get_p(27))
+            else: # 座位
+                metrics['hip_angle'] = calculate_angle(get_p(11), get_p(23), get_p(25))
 
         return annotated_image, metrics
 
 # --- 静止画フィードバック生成 ---
-def generate_static_feedback(metrics, posture_type):
+def generate_static_feedback(f_metrics, s_metrics, posture_type):
     fb = []
-    # 正面要素
-    if abs(metrics['head_tilt']) > 3.0: fb.append("⚠️ **【頭部の傾き】** 首が傾いています。視覚や噛み合わせの影響が疑われます。")
-    if abs(metrics['shoulder_slope']) > 3.0: fb.append("⚠️ **【肩の高さ】** 左右の肩の高さが違います。荷物の持ち癖や側弯のチェックを。")
     
-    # 側面要素 (Forward Head) - 向きによるので絶対値で簡易判定
-    # ※カメラの向きに依存するため、あくまで参考値として警告
-    if abs(metrics['forward_head_score']) > 5.0: 
-        fb.append("⚠️ **【スマホ首 (FHP)】** 頭が肩より前に出ています。首・肩こりの主原因です。")
+    # 正面
+    if f_metrics:
+        if abs(f_metrics['head_tilt']) > 3.0: fb.append("⚠️ **【頭部の傾き】** 正面から見て首が傾いています。")
+        slope = f_metrics['shoulder_slope']
+        if abs(slope) > 3.0: 
+            side = "右" if slope > 0 else "左"
+            fb.append(f"⚠️ **【肩の高さ】** {side}肩が下がっています。")
+    
+    # 側面
+    if s_metrics:
+        # FHP判定（向きによるが、数値が大きい＝ズレが大きいと判断）
+        if abs(s_metrics['forward_head_score']) > 5.0: 
+            fb.append("⚠️ **【ストレートネック傾向】** 頭が肩より前に出ています（スマホ首）。")
+        
+        if abs(s_metrics['trunk_lean']) > 10: 
+            fb.append("⚠️ **【猫背・反り腰】** 上半身の軸が垂直から傾いています。")
 
-    if posture_type == "立位 (Standing)":
-        if metrics['knee_angle'] < 165: fb.append("⚠️ **【膝曲がり】** 膝が伸び切っていません。加齢による変形や筋力低下の可能性があります。")
-        if abs(metrics['trunk_lean']) > 10: fb.append("⚠️ **【姿勢の崩れ】** 上半身が垂直から傾いています（猫背または反り腰）。")
-
-    elif posture_type == "座位 (Sitting)":
-        if metrics['hip_angle'] > 110: fb.append("ℹ️ **【骨盤後傾】** 椅子に浅く座り、背もたれに寄りかかりすぎています（仙骨座り）。")
-        if metrics['knee_angle'] < 80: fb.append("ℹ️ **【足の引き込み】** 足を手前に引きすぎています。膝裏の血流が悪くなる原因です。")
+        if posture_type == "立位 (Standing)":
+            if s_metrics.get('knee_angle', 180) < 165: fb.append("ℹ️ **【膝曲がり】** 膝が伸び切っていません。")
+        else:
+            if s_metrics.get('hip_angle', 90) > 110: fb.append("ℹ️ **【仙骨座り】** 骨盤が後ろに倒れ、腰への負担が大きい座り方です。")
 
     if not fb: fb.append("✅ **グッドポスチャー！** 非常に綺麗な姿勢です。")
     return fb
@@ -166,16 +164,13 @@ def generate_static_feedback(metrics, posture_type):
 # --- 動画分析関数 (既存) ---
 def analyze_video_metrics(history, fps):
     if not history: return None
-    # (既存のロジックを簡略化して統合)
     dists = []
     for lms in history:
         la, ra = np.array([lms[27].x, lms[27].y]), np.array([lms[28].x, lms[28].y])
         dists.append(np.linalg.norm(la - ra))
-    
     steps = 0; thresh = np.mean(dists)
     for i in range(1, len(dists)-1):
         if dists[i] > dists[i-1] and dists[i] > dists[i+1] and dists[i] > thresh: steps += 1
-    
     duration = len(history) / fps
     cadence = (steps / duration) * 60 if duration > 0 else 0
     return {"cadence": cadence, "steps": steps}
@@ -202,85 +197,117 @@ def process_video(file):
     cap.release(); out.release()
     return path, analyze_video_metrics(history, fps)
 
-# --- PDF生成 (統合版) ---
-def create_unified_pdf(mode, name, feedbacks, vid_met=None, stat_met=None):
+# --- PDF生成 ---
+def create_pdf(title, name, feedbacks, vid=None, f_stat=None, s_stat=None):
     b = io.BytesIO()
     c = canvas.Canvas(b, pagesize=A4); h = A4[1]
-    c.setFont("Helvetica-Bold", 16); c.drawString(50, h-50, f"Analysis Report: {mode}")
+    c.setFont("Helvetica-Bold", 16); c.drawString(50, h-50, f"Report: {title}")
     c.setFont("Helvetica", 12); c.drawString(50, h-80, f"Name: {name}")
     
     y = h-120
-    c.setFont("Helvetica-Bold", 12); c.drawString(50, y, "Metrics")
+    c.setFont("Helvetica-Bold", 12); c.drawString(50, y, "Metrics Data")
     y -= 20; c.setFont("Helvetica", 10)
     
-    if vid_met: # 動画データ
-        c.drawString(60, y, f"Cadence: {vid_met['cadence']:.1f} steps/min")
-        c.drawString(200, y, f"Steps Detected: {vid_met['steps']}")
-    elif stat_met: # 静止画データ
-        c.drawString(60, y, f"Head Tilt: {stat_met['head_tilt']:.1f} deg")
-        c.drawString(200, y, f"Shoulder Slope: {stat_met['shoulder_slope']:.1f} deg")
-        y -= 20
-        if 'knee_angle' in stat_met: c.drawString(60, y, f"Knee Angle: {stat_met['knee_angle']:.1f} deg")
-        if 'hip_angle' in stat_met: c.drawString(200, y, f"Hip Angle: {stat_met['hip_angle']:.1f} deg")
+    if vid:
+        c.drawString(60, y, f"Cadence: {vid['cadence']:.1f} steps/min / Steps: {vid['steps']}")
+    
+    if f_stat:
+        y -= 20; c.drawString(60, y, "[Front View]")
+        c.drawString(70, y-15, f"Head Tilt: {f_stat['head_tilt']:.1f} deg")
+        c.drawString(200, y-15, f"Shoulder Slope: {f_stat['shoulder_slope']:.1f} deg")
+        y -= 30
+        
+    if s_stat:
+        c.drawString(60, y, "[Side View]")
+        c.drawString(70, y-15, f"FHP Score: {s_stat['forward_head_score']:.1f}")
+        c.drawString(200, y-15, f"Trunk Lean: {s_stat['trunk_lean']:.1f} deg")
 
     y -= 40; c.setFont("Helvetica-Bold", 12); c.drawString(50, y, "AI Feedback")
     y -= 20; c.setFont("Helvetica", 10)
-    c.drawString(60, y, "Please see the app screen for detailed feedback.")
+    c.drawString(60, y, "See app screen for detailed analysis.")
     
     c.showPage(); c.save(); b.seek(0)
     return b
 
-# --- メインロジック分岐 ---
+# --- メインロジック ---
 
-# A. 静止画分析モード
+# A. 静止画分析モード (アップデート！)
 if app_mode == "静止画：姿勢分析 (立位/座位)":
-    st.info("📸 正面または側面の写真をアップロードしてください")
+    st.info("📸 正面・側面それぞれの写真をアップロードしてください（片方のみも可）")
+    posture_type = st.radio("姿勢タイプ", ["立位 (Standing)", "座位 (Sitting)"], horizontal=True)
     
-    posture_type = st.radio("分析対象の姿勢を選んでください", ["立位 (Standing)", "座位 (Sitting)"], horizontal=True)
-    
+    # 2カラムでアップローダーを表示
     c1, c2 = st.columns(2)
     with c1:
-        img_file = st.file_uploader("写真 (正面/側面)", type=['jpg', 'png', 'jpeg'])
+        st.subheader("① 正面写真")
+        file_f = st.file_uploader("Front Image", type=['jpg','png','jpeg'], key="sf")
+    with c2:
+        st.subheader("② 側面写真")
+        file_s = st.file_uploader("Side Image", type=['jpg','png','jpeg'], key="ss")
     
-    if img_file and st.button("🚀 姿勢分析を実行"):
-        image = np.array(Image.open(img_file))
-        annotated_img, metrics = analyze_static_image(image, posture_type)
+    if st.button("🚀 姿勢分析を実行"):
+        f_img, f_met, s_img, s_met = None, None, None, None
         
-        if metrics:
-            st.image(annotated_img, caption="解析結果", use_container_width=True)
+        # 1. 正面分析
+        if file_f:
+            img = np.array(Image.open(file_f))
+            f_img, f_met = analyze_static_image(img, "front", posture_type)
+        
+        # 2. 側面分析
+        if file_s:
+            img = np.array(Image.open(file_s))
+            s_img, s_met = analyze_static_image(img, "side", posture_type)
             
-            # 結果表示
-            st.subheader("📊 姿勢アライメントデータ")
+        if f_met or s_met:
+            # 画像表示
+            col1, col2 = st.columns(2)
+            with col1:
+                if f_img is not None: st.image(f_img, caption="正面解析", use_container_width=True)
+            with col2:
+                if s_img is not None: st.image(s_img, caption="側面解析", use_container_width=True)
+
+            # データ表示
+            st.subheader("📊 アライメント計測値")
             d1, d2 = st.columns(2)
             with d1:
-                st.metric("頭部の傾き", f"{metrics['head_tilt']:.1f}°")
-                st.metric("肩の傾き", f"{metrics['shoulder_slope']:.1f}°")
+                st.markdown("##### 正面データ")
+                if f_met:
+                    st.metric("頭部の傾き", f"{f_met['head_tilt']:.1f}°")
+                    st.metric("肩の傾き", f"{f_met['shoulder_slope']:.1f}°")
+                else: st.caption("データなし")
             with d2:
-                if posture_type == "立位 (Standing)":
-                    st.metric("膝伸展角度", f"{metrics['knee_angle']:.1f}°", help="180に近いほど真っ直ぐ")
-                    st.metric("体幹の前傾", f"{metrics['trunk_lean']:.1f}°")
-                else:
-                    st.metric("股関節角度", f"{metrics['hip_angle']:.1f}°", help="座り姿勢の深さ")
-                    st.metric("膝屈曲角度", f"{metrics['knee_angle']:.1f}°")
-
-            st.header("👨‍⚕️ AI姿勢フィードバック")
-            feedbacks = generate_static_feedback(metrics, posture_type)
+                st.markdown("##### 側面データ")
+                if s_met:
+                    st.metric("体幹前傾", f"{s_met['trunk_lean']:.1f}°")
+                    val = s_met.get('knee_angle') if posture_type == "立位 (Standing)" else s_met.get('hip_angle')
+                    label = "膝伸展" if posture_type == "立位 (Standing)" else "股関節屈曲"
+                    st.metric(label, f"{val:.1f}°")
+                else: st.caption("データなし")
+            
+            # フィードバック
+            st.header("👨‍⚕️ AI姿勢レポート")
+            feedbacks = generate_static_feedback(f_met, s_met, posture_type)
             for msg in feedbacks:
                 if "⚠️" in msg: st.error(msg)
                 elif "ℹ️" in msg: st.warning(msg)
                 else: st.success(msg)
 
-            # PDF
-            pdf = create_unified_pdf("Posture Analysis", client_name, feedbacks, stat_met=metrics)
+            # 保存
+            pdf = create_pdf("Posture Analysis", client_name, feedbacks, f_stat=f_met, s_stat=s_met)
             st.download_button("📄 レポート保存", pdf, "posture_report.pdf", "application/pdf")
+            
         else:
-            st.error("人物が検出されませんでした。")
+            st.warning("写真をアップロードしてください")
 
-# B. 動画分析モード (Pro / Lite)
+# B. 動画分析モード (既存機能)
 else:
     c1, c2 = st.columns(2)
-    with c1: file_f = st.file_uploader("正面動画", type=['mp4', 'mov'])
-    with c2: file_s = st.file_uploader("側面動画", type=['mp4', 'mov'])
+    with c1:
+        st.subheader("① 正面動画")
+        file_f = st.file_uploader("Front Video", type=['mp4', 'mov'], key="vf")
+    with c2:
+        st.subheader("② 側面動画")
+        file_s = st.file_uploader("Side Video", type=['mp4', 'mov'], key="vs")
 
     if st.button("🚀 歩行分析を実行"):
         path_f, met_f = process_video(file_f)
@@ -296,15 +323,14 @@ else:
             if path_s: st.video(path_s)
 
         if main_met:
+            st.subheader("📊 歩行データ")
             st.metric("ケイデンス", f"{main_met['cadence']:.1f} 歩/分")
             st.success(f"検出歩数: {main_met['steps']}歩")
             
-            # 簡易フィードバック (動画用)
-            fb = []
-            if main_met['cadence'] < 100: fb.append("ℹ️ ピッチがゆっくりです。リズムを意識しましょう。")
-            else: fb.append("✅ 良好な歩行リズムです。")
+            fb = ["✅ 解析完了。詳細はPDFをご確認ください。"]
+            if main_met['cadence'] < 100: fb.append("ℹ️ ペースがゆっくりです。")
             
             for msg in fb: st.info(msg)
             
-            pdf = create_unified_pdf("Gait Analysis", client_name, fb, vid_met=main_met)
+            pdf = create_pdf("Gait Analysis", client_name, fb, vid=main_met)
             st.download_button("📄 レポート保存", pdf, "gait_report.pdf", "application/pdf")
