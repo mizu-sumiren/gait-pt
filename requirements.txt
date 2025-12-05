@@ -1,8 +1,7 @@
 streamlit
-opencv-python-headless
 mediapipe
+opencv-python-headless
 numpy
-pandas
-matplotlib
-japanize-matplotlib
+Pillow
 reportlab
+protobuf<4.21.0
