@@ -1,71 +1,55 @@
 import streamlit as st
 import cv2
 import numpy as np
-import tempfile
-import pandas as pd
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
 
-# MediaPipeの読み込みを保護（エラーが出ても画面が止まらないように）
+# --- 1. ページ設定 (必ず最初に配置) ---
+st.set_page_config(
+    page_title="女性専用 AI歩行ドック",
+    page_icon="💃",
+    layout="centered"
+)
+
+# --- 2. MediaPipeの安全な読み込み ---
+# インポートエラーを回避するための記述です
 try:
     import mediapipe as mp
     mp_pose = mp.solutions.pose
     mp_drawing = mp.solutions.drawing_utils
-except Exception as e:
-    st.error(f"分析エンジン準備中... (環境構築完了までお待ちください): {e}")
+    POSE_READY = True
+except (ImportError, AttributeError):
+    POSE_READY = False
 
-st.set_page_config(page_title="女性専用 AI歩行ドック", page_icon="💃")
-
-# --- タイトル・コンセプト ---
+# --- 3. UI表示 (コンセプト) ---
 st.title("💃 女性専用 AI歩行ドック")
-st.write("理学療法士の知見で、あなたの歩き方を「一生モノ」の美しさへ。") [cite: 2025-11-21]
+st.subheader("理学療法士の知見で、あなたの歩き方を「一生モノ」の美しさへ。")
 
-# --- 5指標スコアリング ---
-def calculate_walking_score():
-    return {
-        "1. 股関節の伸び (美尻・歩幅)": 30,
-        "2. 体幹の安定性 (くびれ・姿勢)": 30,
-        "3. 衝撃吸収 (ひざ・腰負担)": 15,
-        "4. 膝のクッション (若々しさ)": 15,
-        "5. 足の振り出し (軽やかさ)": 10
-    }
+st.markdown("""
+### 5指標スコアリング
+1. **股関節の伸び** (美尻・歩幅)
+2. **体幹の安定性** (くびれ・姿勢)
+3. **衝撃吸収** (ひざ・腰負担)
+4. **膝のクッション** (若々しさ)
+5. **足の振り出し** (軽やかさ)
+""")
 
-# --- 40代女性が手元に残したくなるPDFデザイン ---
-def create_report_pdf(scores, total_score):
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    c = canvas.Canvas(tmp.name, pagesize=A4)
-    # デザイン：清潔感のあるミントグリーン系
-    c.setStrokeColor(colors.lightseagreen)
-    c.setFont("Helvetica-Bold", 24)
-    c.drawString(50, 800, "AI Gait Analysis Report")
-    
-    c.setFont("Helvetica", 18)
-    c.drawString(50, 750, f"Total Score: {total_score} / 100")
-    
-    c.setFont("Helvetica", 12)
-    y = 700
-    for label, score in scores.items():
-        c.drawString(70, y, f"{label}: {score} pts")
-        y -= 30
-    
-    c.setFont("Helvetica-Oblique", 11)
-    c.drawString(50, y - 50, "Physiotherapist Advice:")
-    c.drawString(70, y - 80, "Your hip extension is the key to your future beauty and health.")
-    
-    c.save()
-    return tmp.name
+# --- 4. メイン機能 ---
+if not POSE_READY:
+    st.error("現在、分析エンジンを準備中です。数分後に再読み込みするか、アプリの再起動(Reboot)をお試しください。")
+else:
+    st.info("分析エンジンの準備が完了しました！動画をアップロードしてください。")
 
-# --- 画面操作 ---
-uploaded_file = st.file_uploader("動画をアップロード", type=["mp4", "mov"])
+    # 動画アップロード
+    uploaded_file = st.file_uploader("歩行動画を選択してください (mp4, movなど)", type=["mp4", "mov", "avi"])
 
-if uploaded_file:
-    scores = calculate_walking_score()
-    total_score = sum(scores.values())
-    st.subheader(f"📊 分析結果: {total_score} 点")
-    st.table(pd.DataFrame(list(scores.items()), columns=['評価指標', 'スコア']))
-    
-    pdf_path = create_report_pdf(scores, total_score)
-    with open(pdf_path, "rb") as f:
-        st.download_button("📄 レポート(PDF)を保存する", f, "Gait_Report.pdf", "application/pdf")
-    st.success("レポートが完成しました！")
+    if uploaded_file is not None:
+        st.success("動画を受け付けました。分析を開始します...")
+        # ここに分析ロジックを追加していきます
+        
+        # プレビュー表示
+        st.video(uploaded_file)
+        
+        st.warning("※現在、分析ロジックの実装を進めています。次は各指標の計算を行います。")
+
+# --- 5. フッター ---
+st.divider()
+st.caption("© 2026 AI歩行ドック Project - 働く女性の生産性向上と健康をサポート")
