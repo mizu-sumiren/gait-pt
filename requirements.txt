@@ -1,7 +1,6 @@
 streamlit
-opencv-python-headless
 mediapipe
+opencv-python-headless
 numpy
-Pillow
 reportlab
-protobuf<4.21.0
+Pillow
