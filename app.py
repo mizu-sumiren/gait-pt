@@ -8,6 +8,10 @@ import math
 from datetime import datetime
 from PIL import Image
 
+# MediaPipeのエラー回避用インポート
+from mediapipe.python.solutions import pose as mp_pose
+from mediapipe.python.solutions import drawing_utils as mp_drawing
+
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
@@ -15,10 +19,11 @@ from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.lib.utils import ImageReader
 
 # 日本語フォント登録
-pdfmetrics.registerFont(UnicodeCIDFont("HeiseiKakuGo-W5"))
-
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
+try:
+    pdfmetrics.registerFont(UnicodeCIDFont("HeiseiKakuGo-W5"))
+    JP_FONT = "HeiseiKakuGo-W5"
+except:
+    JP_FONT = "Helvetica"
 
 st.set_page_config(page_title="AI姿勢・歩行分析ラボ", page_icon="🏥", layout="wide")
 
@@ -53,8 +58,7 @@ if client_gender == "女性" and "歩行" in app_mode:
 if "歩行" in app_mode:
     st.title("🏃‍♂️ AI歩行ドック (Clinical Grade)")
     if is_female_mode:
-        st.subheader("【女性専用モード：5指標スコアリング】")
-    st.caption("転倒リスク・腰痛リスクを「揺れ」「ばらつき」「左右差」から可視化")
+        st.subheader("【女性専用モード：理学療法士監修 5指標スコアリング】")
 else:
     st.title("📸 AI姿勢分析ラボ")
 
@@ -68,16 +72,9 @@ def calculate_angle(a, b, c):
         angle = 360 - angle
     return angle
 
-def calculate_vertical_angle(a, b):
-    if a is None or b is None: return 0.0
-    return math.degrees(math.atan2(b[0]-a[0], b[1]-a[1]))
-
 # --- 女性専用：5指標解析ロジック ---
 
 def analyze_female_specific_gait(lms_history, fps, w, h, height_cm):
-    """
-    40代女性向け：PTの知見に基づいた5指標スコアリング
-    """
     if not lms_history or len(lms_history) < 10: return None
 
     # 接地タイミングの特定
@@ -99,7 +96,6 @@ def analyze_female_specific_gait(lms_history, fps, w, h, height_cm):
     scores = {}
     details = {}
 
-    # 最低3歩以上のデータがある場合
     if len(all_p) >= 3:
         step1_range = range(0, all_p[0][0])
         step2_range = range(all_p[0][0], all_p[1][0])
@@ -108,30 +104,30 @@ def analyze_female_specific_gait(lms_history, fps, w, h, height_cm):
         # 1. 第1歩：股関節可動域 (30点)
         h_angs = [calculate_angle([l[11].x*w, l[11].y*h], [l[23].x*w, l[23].y*h], [l[25].x*w, l[25].y*h]) for i in step1_range if (l:=lms_history[i])]
         rom_h = max(h_angs) - min(h_angs) if h_angs else 0
-        scores['hip'] = min(30, (rom_h / 35) * 30) # 35度基準
+        scores['股関節の伸び'] = min(30, (rom_h / 35) * 30)
         details['hip_val'] = rom_h
 
         # 2. 第3歩：体幹側方動揺 (30点)
         sways = [(l[23].x + l[24].x)/2 for i in step3_range if (l:=lms_history[i])]
         sway_val = np.std(sways) * 100 if sways else 0
-        scores['sway'] = max(0, 30 - (sway_val * 15)) # 動揺が小さいほど高得点
+        scores['体幹の安定性'] = max(0, 30 - (sway_val * 15))
         details['sway_val'] = sway_val
 
         # 3. 第2歩：体幹垂直移動 (15点)
         verts = [(l[23].y + l[24].y)/2 for i in step2_range if (l:=lms_history[i])]
         v_mov = (max(verts) - min(verts)) * height_cm if verts else 0
-        scores['vert'] = min(15, (v_mov / 5) * 15) # 5cm基準
+        scores['衝撃吸収'] = min(15, (v_mov / 5) * 15)
         details['vert_val'] = v_mov
 
         # 4. 第2・3歩：膝可動域 (15点)
         k_angs = [calculate_angle([l[23].x*w, l[23].y*h], [l[25].x*w, l[25].y*h], [l[27].x*w, l[27].y*h]) for i in list(step2_range)+list(step3_range) if (l:=lms_history[i])]
         rom_k = max(k_angs) - min(k_angs) if k_angs else 0
-        scores['knee'] = min(15, (rom_k / 60) * 15) # 60度基準
+        scores['膝のクッション'] = min(15, (rom_k / 60) * 15)
         details['knee_val'] = rom_k
 
         # 5. 第1歩：遊脚相率 (10点)
         swing_r = (len(step1_range) / (all_p[1][0] if len(all_p)>1 else 1)) * 100
-        scores['swing'] = min(10, (swing_r / 40) * 10)
+        scores['足の振り出し'] = min(10, (swing_r / 40) * 10)
         details['swing_val'] = swing_r
 
     total = sum(scores.values())
@@ -168,30 +164,32 @@ def process_video_optimized(file, height_cm, is_female):
     clean_lms = [l for l in lms_history if l is not None]
     if not clean_lms: return None, None, None
 
-    # 通常解析
-    metrics = {"fps": fps} 
-    # (ここでは簡略化。必要に応じて元の metrics 計算を追加)
-
-    # 女性専用詳細解析
     female_results = None
     if is_female:
         female_results = analyze_female_specific_gait(clean_lms, fps, w, h, height_cm)
 
-    return out_path, metrics, female_results
+    return out_path, female_results
 
-# --- PDF生成 (枠組み) ---
+# --- PDF生成 ---
 
 def create_female_pdf(name, score_dict):
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
-    c.setFont("HeiseiKakuGo-W5", 16)
-    c.drawString(50, 800, f"AI歩行分析レポート (女性専用詳細版)")
-    c.setFont("HeiseiKakuGo-W5", 12)
-    c.drawString(50, 770, f"氏名: {name} 様  /  スコア: {score_dict['total']:.1f} 点")
+    c.setFont(JP_FONT, 20)
+    c.drawString(50, 800, f"AI歩行分析レポート")
+    c.setFont(JP_FONT, 14)
+    c.drawString(50, 770, f"氏名: {name} 様")
+    c.drawString(50, 750, f"分析日: {datetime.now().strftime('%Y/%m/%d')}")
     
-    y = 730
+    c.setFont(JP_FONT, 24)
+    c.drawString(50, 700, f"総合スコア: {score_dict['total']:.1f} 点")
+    
+    y = 650
+    c.setFont(JP_FONT, 12)
+    c.drawString(50, y, "[ 詳細指標 ]")
+    y -= 30
     for k, v in score_dict['scores'].items():
-        c.drawString(60, y, f"・{k}: {v:.1f} 点")
+        c.drawString(70, y, f"・{k}: {v:.1f} / {30 if '安定' in k or '伸び' in k else 15 if '振り' not in k else 10} 点")
         y -= 20
     
     c.showPage()
@@ -202,10 +200,10 @@ def create_female_pdf(name, score_dict):
 # --- メインUI実行 ---
 
 if "歩行" in app_mode:
-    video_file = st.file_uploader("🎥 歩行動画をアップロード", type=["mp4", "mov"])
+    video_file = st.file_uploader("🎥 歩行動画をアップロード (mp4/mov)", type=["mp4", "mov"])
     if st.button("🚀 解析開始") and video_file:
         with st.spinner("PT-AIが分析中..."):
-            out_path, _, female_res = process_video_optimized(video_file, client_height_cm, is_female_mode)
+            out_path, female_res = process_video_optimized(video_file, client_height_cm, is_female_mode)
             
         if out_path:
             st.video(out_path)
@@ -214,13 +212,10 @@ if "歩行" in app_mode:
                 st.header(f"総合スコア: {female_res['total']:.1f} / 100点")
                 
                 cols = st.columns(5)
-                labels = ["股関節", "体幹揺れ", "垂直移動", "膝関節", "遊脚"]
-                keys = ['hip', 'sway', 'vert', 'knee', 'swing']
-                for col, lab, k in zip(cols, labels, keys):
-                    col.metric(lab, f"{female_res['scores'][k]:.1f}")
+                for col, (lab, val) in zip(cols, female_res['scores'].items()):
+                    col.metric(lab, f"{val:.1f}")
 
-                # PDFダウンロード
                 pdf = create_female_pdf(client_name, female_res)
-                st.download_button("📄 詳細レポート(PDF)をダウンロード", pdf, "gait_report.pdf")
+                st.download_button("📄 レポート(PDF)を保存", pdf, f"gait_report_{datetime.now().strftime('%Y%m%d')}.pdf")
             else:
-                st.success("解析が完了しました（Liteモード）")
+                st.success("解析が完了しました")
