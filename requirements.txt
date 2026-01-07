@@ -4,3 +4,4 @@ opencv-python-headless
 pandas
 numpy
 reportlab
+protobuf<5.0.0
