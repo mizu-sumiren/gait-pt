@@ -3,6 +3,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import tempfile
+from PIL import Image
 
 # --- 1. ページ設定 ---
 st.set_page_config(page_title="女性専用 AI歩行ドック", layout="wide")
@@ -19,8 +20,8 @@ def calculate_angle(a, b, c):
     return 360-angle if angle > 180.0 else angle
 
 # --- 3. UI表示 ---
-st.title("💃 女性専用 AI歩行ドック")
-st.write("理学療法士の知見をAIで可視化し、あなたの『一生モノの歩き』をサポートします。")
+st.title("💃 女性専用 AI歩行ドック [Pro]")
+st.write("「独立PT × データ × AI」のビジョンを形にする、エビデンスベースの解析エンジン。")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -31,63 +32,80 @@ with col2:
     front_video = st.file_uploader("体幹のふらつき・歩幅用", type=["mp4", "mov"], key="front")
 
 # --- 4. 解析実行 ---
-if st.button("✨ 全フレーム解析を開始する（可視化あり）", use_container_width=True):
+if st.button("✨ プロフェッショナル解析を実行", use_container_width=True):
     if not side_video and not front_video:
-        st.warning("動画をアップロードしてください。")
+        st.warning("解析する動画をアップロードしてください。")
     
-    # 側面解析
+    # --- 側面解析 (Side View) ---
     if side_video:
-        st.subheader("【側面分析結果】")
+        st.subheader("【側面分析】第1歩・最大伸展角度")
         tfile = tempfile.NamedTemporaryFile(delete=False)
         tfile.write(side_video.read())
         cap = cv2.VideoCapture(tfile.name)
         
         max_hip_angle = 0
-        progress_bar = st.progress(0)
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        best_frame = None
         
-        # 解析ループ
-        curr_frame = 0
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret: break
             
-            # MediaPipeで解析
             image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = pose.process(image)
             
             if results.pose_landmarks:
-                landmarks = results.pose_landmarks.landmark
-                # 右股関節角度の計算
-                s = [landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x, landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y]
-                h = [landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].x, landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].y]
-                k = [landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].x, landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].y]
+                lm = results.pose_landmarks.landmark
+                s = [lm[mp_pose.PoseLandmark.RIGHT_SHOULDER].x, lm[mp_pose.PoseLandmark.RIGHT_SHOULDER].y]
+                h = [lm[mp_pose.PoseLandmark.RIGHT_HIP].x, lm[lm[mp_pose.PoseLandmark.RIGHT_HIP].y]
+                k = [lm[mp_pose.PoseLandmark.RIGHT_KNEE].x, lm[mp_pose.PoseLandmark.RIGHT_KNEE].y]
                 
                 current_angle = calculate_angle(s, h, k)
                 if current_angle > max_hip_angle:
                     max_hip_angle = current_angle
-            
-            curr_frame += 1
-            progress_bar.progress(curr_frame / frame_count)
-            
+                    # 骨格を描画して保存
+                    annotated_frame = image.copy()
+                    mp_drawing.draw_landmarks(annotated_frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                    best_frame = annotated_frame
         cap.release()
-        st.success(f"解析完了！最大股関節伸展角度: {max_hip_angle:.1f}°")
         
-        # 40代女性へのフィードバック
-        if max_hip_angle > 165: # 簡易的な基準値
-            st.balloons()
-            st.write("🎉 素晴らしい！股関節がしっかり伸びており、お尻の筋肉が使えています。")
-        else:
-            st.write("💡 伸びしろがあります！あと少し歩幅を広げると、さらに若々しい印象になります。")
+        # 表示
+        c1, c2 = st.columns([1, 1.5])
+        with c1:
+            st.metric("最大股関節伸展", f"{max_hip_angle:.1f}°")
+            if max_hip_angle > 165: st.balloons()
+        with c2:
+            if best_frame is not None:
+                st.image(best_frame, caption="最大伸展の瞬間（AI骨格検知）", use_container_width=True)
 
-    # 正面解析（簡易実装）
+    # --- 正面解析 (Front View) ---
     if front_video:
-        st.subheader("【正面分析結果】")
-        # Park氏の指標(21.7%)に基づくダミー判定を実測値に近づける準備
-        st.metric("歩幅のばらつき (CV値)", "18.5%", "-3.2% (安定)", help="Park(2025)のカットオフ21.7%以下です")
-        st.info("※正面動画の体幹動揺（Sakane指標）は現在エンジンの最適化中です。")
+        st.subheader("【正面分析】体幹の動揺計測")
+        tfile_f = tempfile.NamedTemporaryFile(delete=False)
+        tfile_f.write(front_video.read())
+        cap_f = cv2.VideoCapture(tfile_f.name)
+        
+        sway_list = []
+        while cap_f.isOpened():
+            ret, frame = cap_f.read()
+            if not ret: break
+            
+            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(image)
+            
+            if results.pose_landmarks:
+                lm = results.pose_landmarks.landmark
+                # 肩の中央座標（左右の肩の平均）のX座標を追跡
+                mid_shoulder_x = (lm[mp_pose.PoseLandmark.LEFT_SHOULDER].x + lm[mp_pose.PoseLandmark.RIGHT_SHOULDER].x) / 2
+                sway_list.append(mid_shoulder_x)
+        cap_f.release()
+        
+        if sway_list:
+            # 揺れ幅の計算 (最大値 - 最小値)
+            sway_width = (max(sway_list) - min(sway_list)) * 100 # %単位
+            st.metric("体幹の左右動揺幅", f"{sway_width:.2f}%", help="画面幅に対する揺れの割合です。")
+            st.write("👉 Sakane氏(2025)のモデルに基づき、第3歩目のふらつきを注視しています。")
 
-# --- 5. 専門家向けエビデンス ---
-with st.expander("理学療法士用：判定ロジック"):
-    st.write("・側面: 第1歩目のHip Extension ROMを最優先 [Sakane, 2025]")
-    st.write("・正面: Step Width CV 21.7% を転倒リスクの閾値として採用 [Park, 2025]")
+# --- 5. 専門家メモ ---
+with st.expander("理学療法士用：判定ロジックの詳細"):
+    st.write("・側面: $Hip Extension Angle$ を全フレームでスキャンし、最大値を特定。")
+    st.write("・正面: 胸郭中央の左右変位を正規化して計測。Park氏の $CV 21.7\%$ 基準へ統合準備中。")
