@@ -10,6 +10,9 @@ import matplotlib.pyplot as plt
 # Phase 2の機能をインポート
 from gait_event_detector import GaitEventDetector
 
+# Phase 3の機能をインポート
+from gait_parameter_calculator import GaitParameterCalculator
+
 # ========================================
 # GaitMathCore クラス（変更なし）
 # ========================================
@@ -154,13 +157,14 @@ def main():
     # GaitMathCore 初期化
     math_core = GaitMathCore(fps=fps)
     
-    # タブ分け（Phase 2のタブを追加）
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    # タブ分け（Phase 2と3のタブを追加）
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📐 角度計算テスト", 
         "📏 セグメント長計算", 
         "🔄 正規化テスト",
         "📊 フィルタリングテスト",
-        "🦶 歩行イベント検出（Phase 2）"
+        "🦶 歩行イベント検出（Phase 2）",
+        "📈 歩行パラメータ計算（Phase 3）"
     ])
     
     # ========================================
@@ -436,6 +440,261 @@ def main():
                     st.metric("平均ストライド時間", f"{avg_stride:.3f} 秒")
     
     # ========================================
+    # タブ6: Phase 3 - 歩行パラメータ計算
+    # ========================================
+    with tab6:
+        st.header("📈 Phase 3: 歩行パラメータ計算")
+        st.markdown("検出された歩行イベントから詳細な歩行パラメータを計算します")
+        
+        # GaitParameterCalculator 初期化
+        st.subheader("設定")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            use_pixel_conversion = st.checkbox("ピクセルをメートルに変換", value=False)
+            pixel_to_meter = None
+            if use_pixel_conversion:
+                pixel_to_meter = st.number_input(
+                    "変換係数 (例: 100pixel=1mなら0.01)",
+                    value=0.01,
+                    format="%.4f",
+                    min_value=0.0001,
+                    max_value=1.0
+                )
+        
+        with col2:
+            normalize_spatial = st.checkbox("空間パラメータを正規化", value=False)
+            normalization_length = None
+            if normalize_spatial:
+                normalization_length = st.number_input(
+                    "正規化用の長さ (例: 大腿骨長 [pixel])",
+                    value=200.0,
+                    min_value=1.0
+                )
+        
+        calculator = GaitParameterCalculator(
+            sampling_rate=float(fps),
+            pixel_to_meter=pixel_to_meter
+        )
+        
+        # サンプルデータ生成
+        st.subheader("テストデータ生成")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            duration_p3 = st.slider("データの長さ（秒）", 5, 20, 10, key="duration_p3")
+            stride_freq_p3 = st.slider("歩行頻度 (Hz)", 0.5, 2.0, 1.0, 0.1, key="stride_freq_p3")
+        
+        with col2:
+            noise_level_p3 = st.slider("ノイズレベル", 0.0, 10.0, 2.0, 0.5, key="noise_p3")
+            amplitude_p3 = st.slider("振幅 (pixel)", 10.0, 50.0, 30.0, 5.0, key="amp_p3")
+        
+        with col3:
+            walking_distance = st.slider("歩行距離 (pixel)", 100.0, 500.0, 300.0, 50.0)
+        
+        if st.button("パラメータを計算", type="primary", key="calc_params"):
+            with st.spinner("計算中..."):
+                # テストデータ生成
+                n_frames = int(duration_p3 * fps)
+                t = np.linspace(0, duration_p3, n_frames)
+                
+                # 踵とつま先のY座標
+                heel_y = -50 + amplitude_p3 * np.sin(2 * np.pi * stride_freq_p3 * t)
+                heel_y += np.random.normal(0, noise_level_p3, n_frames)
+                
+                toe_y = -40 + (amplitude_p3 * 0.8) * np.sin(2 * np.pi * stride_freq_p3 * t + np.pi/6)
+                toe_y += np.random.normal(0, noise_level_p3, n_frames)
+                
+                # 踵の前方移動（X座標）を模擬
+                heel_x = np.linspace(0, walking_distance, n_frames)
+                heel_positions = np.column_stack([heel_x, heel_y])
+                
+                # GaitEventDetectorでイベント検出
+                detector = GaitEventDetector(sampling_rate=float(fps))
+                events = detector.detect_events(heel_y, toe_y)
+                cycles = detector.calculate_gait_cycles(events)
+                
+                if len(cycles) == 0:
+                    st.error("⚠️ 歩行周期が検出されませんでした")
+                else:
+                    # Phase 3: パラメータ計算
+                    
+                    # 1. 基本パラメータ
+                    parameters = calculator.calculate_stride_parameters(cycles)
+                    
+                    # 2. 空間パラメータ
+                    spatial_params = calculator.calculate_spatial_parameters(
+                        heel_positions[:, 0],  # X座標のみ使用
+                        events,
+                        normalize_by=normalization_length if normalize_spatial else None
+                    )
+                    
+                    # 3. 速度パラメータ
+                    stride_times = [p.stride_time for p in parameters]
+                    stride_lengths = spatial_params.get('stride_lengths', [])
+                    
+                    if len(stride_lengths) > 0:
+                        speed_params = calculator.calculate_walking_speed(
+                            stride_times[:len(stride_lengths)],
+                            stride_lengths
+                        )
+                    else:
+                        speed_params = {}
+                    
+                    # 4. 変動性
+                    variability = calculator.calculate_variability(parameters)
+                    
+                    # 結果表示
+                    st.success("✅ 計算完了！")
+                    
+                    # サマリー表示
+                    st.subheader("📊 サマリー統計")
+                    
+                    summary_df = calculator.generate_summary_report(
+                        parameters,
+                        spatial_params=spatial_params,
+                        speed_params=speed_params,
+                        variability=variability
+                    )
+                    
+                    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                    
+                    # 詳細な指標
+                    st.subheader("🔍 詳細な指標")
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        avg_stride_time = np.mean([p.stride_time for p in parameters])
+                        st.metric("平均ストライド時間", f"{avg_stride_time:.3f} 秒")
+                    
+                    with col2:
+                        avg_cadence = np.mean([p.cadence for p in parameters if p.cadence])
+                        st.metric("平均ケイデンス", f"{avg_cadence:.1f} steps/min")
+                    
+                    with col3:
+                        if spatial_params and 'mean_stride_length' in spatial_params:
+                            unit = 'm' if pixel_to_meter else 'pixel'
+                            st.metric(f"平均ストライド長", f"{spatial_params['mean_stride_length']:.3f} {unit}")
+                        else:
+                            st.metric("平均ストライド長", "N/A")
+                    
+                    with col4:
+                        if speed_params and 'mean_walking_speed' in speed_params:
+                            unit = 'm/s' if pixel_to_meter else 'pixel/s'
+                            st.metric(f"平均歩行速度", f"{speed_params['mean_walking_speed']:.3f} {unit}")
+                        else:
+                            st.metric("平均歩行速度", "N/A")
+                    
+                    # 変動性の表示
+                    if variability:
+                        st.subheader("📉 変動性")
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.metric(
+                                "ストライド時間 変動係数 (CV)",
+                                f"{variability.get('stride_time_cv', 0):.2f} %",
+                                help="低いほど安定した歩行"
+                            )
+                        
+                        with col2:
+                            st.metric(
+                                "ストライド時間 標準偏差",
+                                f"{variability.get('stride_time_std', 0):.4f} 秒"
+                            )
+                        
+                        # CVの評価
+                        cv_value = variability.get('stride_time_cv', 0)
+                        if cv_value < 3:
+                            st.success("✓ 非常に安定した歩行パターン")
+                        elif cv_value < 5:
+                            st.info("✓ 安定した歩行パターン")
+                        elif cv_value < 10:
+                            st.warning("⚠ やや不安定な歩行パターン")
+                        else:
+                            st.error("⚠ 不安定な歩行パターン")
+                    
+                    # 各周期の詳細データ
+                    st.subheader("📋 各周期の詳細")
+                    
+                    detail_data = []
+                    for i, (param, cycle) in enumerate(zip(parameters, cycles)):
+                        row = {
+                            '周期': i + 1,
+                            'ストライド時間 (秒)': f"{param.stride_time:.3f}",
+                            '立脚期 (秒)': f"{param.stance_time:.3f}",
+                            '遊脚期 (秒)': f"{param.swing_time:.3f}",
+                            '立脚期割合 (%)': f"{param.stance_percentage:.1f}",
+                            'ケイデンス (steps/min)': f"{param.cadence:.1f}" if param.cadence else "N/A"
+                        }
+                        
+                        if i < len(stride_lengths):
+                            unit = 'm' if pixel_to_meter else 'pixel'
+                            row[f'ストライド長 ({unit})'] = f"{stride_lengths[i]:.3f}"
+                        
+                        detail_data.append(row)
+                    
+                    detail_df = pd.DataFrame(detail_data)
+                    st.dataframe(detail_df, use_container_width=True, hide_index=True)
+                    
+                    # グラフ表示
+                    st.subheader("📊 時系列グラフ")
+                    
+                    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+                    
+                    # 1. ストライド時間の推移
+                    ax1 = axes[0, 0]
+                    stride_times_plot = [p.stride_time for p in parameters]
+                    ax1.plot(range(1, len(stride_times_plot) + 1), stride_times_plot, 'o-', linewidth=2, markersize=8)
+                    ax1.axhline(y=np.mean(stride_times_plot), color='r', linestyle='--', label='平均')
+                    ax1.set_xlabel('周期', fontsize=11)
+                    ax1.set_ylabel('ストライド時間 (秒)', fontsize=11)
+                    ax1.set_title('ストライド時間の推移', fontsize=12, fontweight='bold')
+                    ax1.legend()
+                    ax1.grid(True, alpha=0.3)
+                    
+                    # 2. 立脚期・遊脚期の割合
+                    ax2 = axes[0, 1]
+                    stance_pcts = [p.stance_percentage for p in parameters]
+                    swing_pcts = [p.swing_percentage for p in parameters]
+                    x_pos = range(1, len(parameters) + 1)
+                    ax2.bar(x_pos, stance_pcts, label='立脚期', alpha=0.7)
+                    ax2.bar(x_pos, swing_pcts, bottom=stance_pcts, label='遊脚期', alpha=0.7)
+                    ax2.set_xlabel('周期', fontsize=11)
+                    ax2.set_ylabel('割合 (%)', fontsize=11)
+                    ax2.set_title('立脚期・遊脚期の割合', fontsize=12, fontweight='bold')
+                    ax2.legend()
+                    ax2.grid(True, alpha=0.3, axis='y')
+                    
+                    # 3. ケイデンスの推移
+                    ax3 = axes[1, 0]
+                    cadences_plot = [p.cadence for p in parameters if p.cadence]
+                    if len(cadences_plot) > 0:
+                        ax3.plot(range(1, len(cadences_plot) + 1), cadences_plot, 's-', linewidth=2, markersize=8, color='green')
+                        ax3.axhline(y=np.mean(cadences_plot), color='r', linestyle='--', label='平均')
+                        ax3.set_xlabel('周期', fontsize=11)
+                        ax3.set_ylabel('ケイデンス (steps/min)', fontsize=11)
+                        ax3.set_title('ケイデンスの推移', fontsize=12, fontweight='bold')
+                        ax3.legend()
+                        ax3.grid(True, alpha=0.3)
+                    
+                    # 4. ストライド長の推移
+                    ax4 = axes[1, 1]
+                    if len(stride_lengths) > 0:
+                        ax4.plot(range(1, len(stride_lengths) + 1), stride_lengths, '^-', linewidth=2, markersize=8, color='purple')
+                        ax4.axhline(y=np.mean(stride_lengths), color='r', linestyle='--', label='平均')
+                        unit = 'm' if pixel_to_meter else 'pixel'
+                        ax4.set_xlabel('周期', fontsize=11)
+                        ax4.set_ylabel(f'ストライド長 ({unit})', fontsize=11)
+                        ax4.set_title('ストライド長の推移', fontsize=12, fontweight='bold')
+                        ax4.legend()
+                        ax4.grid(True, alpha=0.3)
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+    
+    # ========================================
     # フッター
     # ========================================
     st.markdown("---")
@@ -453,7 +712,14 @@ def main():
     - ✓ 歩行周期の計算
     - ✓ 立脚期・遊脚期の分析
     
-    **次のステップ**: Phase 3（GaitParameterCalculator）の実装へ
+    ### ✅ Phase 3 チェックリスト
+    - ✓ ストライド時間・立脚期・遊脚期の計算
+    - ✓ ストライド長・ステップ長の計算
+    - ✓ 歩行速度・ケイデンスの計算
+    - ✓ 変動性（CV）の計算
+    - ✓ サマリーレポートの生成
+    
+    **次のステップ**: Phase 4（統合テスト）の実装へ
     """)
 
 
