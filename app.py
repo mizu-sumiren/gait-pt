@@ -5,6 +5,10 @@ from scipy.signal import savgol_filter
 from scipy.interpolate import UnivariateSpline
 from typing import Dict, List, Tuple, Optional, Union
 import warnings
+import matplotlib.pyplot as plt
+
+# Phase 2の機能をインポート
+from gait_event_detector import GaitEventDetector
 
 # ========================================
 # GaitMathCore クラス（変更なし）
@@ -134,12 +138,12 @@ class GaitMathCore:
 
 def main():
     st.set_page_config(
-        page_title="歩行分析エンジン - Phase 1",
+        page_title="歩行分析エンジン - Phase 1 & 2",
         page_icon="🚶",
         layout="wide"
     )
     
-    st.title("🚶 歩行分析エンジン - GaitMathCore テスト")
+    st.title("🚶 歩行分析エンジン - GaitMathCore + GaitEventDetector")
     st.markdown("---")
     
     # サイドバー
@@ -150,12 +154,13 @@ def main():
     # GaitMathCore 初期化
     math_core = GaitMathCore(fps=fps)
     
-    # タブ分け
-    tab1, tab2, tab3, tab4 = st.tabs([
+    # タブ分け（Phase 2のタブを追加）
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📐 角度計算テスト", 
         "📏 セグメント長計算", 
         "🔄 正規化テスト",
-        "📊 フィルタリングテスト"
+        "📊 フィルタリングテスト",
+        "🦶 歩行イベント検出（Phase 2）"
     ])
     
     # ========================================
@@ -187,7 +192,7 @@ def main():
             p3_z = st.number_input("Z座標", value=0.0, key="p3_z")
             p3_vis = st.slider("信頼度", 0.0, 1.0, 0.9, key="p3_vis")
         
-        if st.button("角度を計算", type="primary"):
+        if st.button("角度を計算", type="primary", key="calc_angle"):
             p1 = {'x': p1_x, 'y': p1_y, 'z': p1_z, 'visibility': p1_vis}
             p2 = {'x': p2_x, 'y': p2_y, 'z': p2_z, 'visibility': p2_vis}
             p3 = {'x': p3_x, 'y': p3_y, 'z': p3_z, 'visibility': p3_vis}
@@ -227,7 +232,7 @@ def main():
             seg_p2_y = st.number_input("Y座標", value=0.3, key="seg_p2_y")
             seg_p2_vis = st.slider("信頼度", 0.0, 1.0, 0.9, key="seg_p2_vis")
         
-        if st.button("セグメント長を計算", type="primary"):
+        if st.button("セグメント長を計算", type="primary", key="calc_seg"):
             seg_p1 = {'x': seg_p1_x, 'y': seg_p1_y, 'z': 0.0, 'visibility': seg_p1_vis}
             seg_p2 = {'x': seg_p2_x, 'y': seg_p2_y, 'z': 0.0, 'visibility': seg_p2_vis}
             
@@ -257,7 +262,7 @@ def main():
             step=1.0
         )
         
-        if st.button("正規化", type="primary"):
+        if st.button("正規化", type="primary", key="normalize"):
             normalized = math_core.normalize_by_segment_length(
                 value_to_normalize, segment_length, "大腿骨長"
             )
@@ -311,6 +316,126 @@ def main():
             st.metric("改善率", f"{improvement:.1f}%")
     
     # ========================================
+    # タブ5: Phase 2 - 歩行イベント検出
+    # ========================================
+    with tab5:
+        st.header("🦶 Phase 2: 歩行イベント検出")
+        st.markdown("踵接地（Heel Strike）と足離地（Toe Off）を自動検出します")
+        
+        # GaitEventDetector 初期化
+        detector = GaitEventDetector(sampling_rate=float(fps))
+        
+        # サンプルデータ生成オプション
+        st.subheader("テストデータ設定")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            duration = st.slider("データの長さ（秒）", 5, 20, 10)
+            stride_frequency = st.slider("歩行頻度 (Hz)", 0.5, 2.0, 1.0, 0.1)
+        
+        with col2:
+            noise_level_gait = st.slider("ノイズレベル", 0.0, 10.0, 2.0, 0.5)
+            amplitude = st.slider("振幅 (pixel)", 10.0, 50.0, 30.0, 5.0)
+        
+        if st.button("サンプルデータを生成して検出", type="primary", key="detect_events"):
+            # テストデータ生成
+            n_frames = int(duration * fps)
+            t = np.linspace(0, duration, n_frames)
+            
+            # 模擬的な踵とつま先のY座標
+            # 踵：周期的に上下（地面に近づく＝Y座標が小さくなる）
+            heel_y = -50 + amplitude * np.sin(2 * np.pi * stride_frequency * t)
+            heel_y += np.random.normal(0, noise_level_gait, n_frames)
+            
+            # つま先：踵より少し位相がずれる
+            toe_y = -40 + (amplitude * 0.8) * np.sin(2 * np.pi * stride_frequency * t + np.pi/6)
+            toe_y += np.random.normal(0, noise_level_gait, n_frames)
+            
+            # イベント検出
+            events = detector.detect_events(heel_y, toe_y)
+            
+            # 歩行周期の計算
+            cycles = detector.calculate_gait_cycles(events)
+            
+            # 結果表示
+            st.success("✅ 検出完了！")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("踵接地検出数", len(events['heel_strikes']))
+            with col2:
+                st.metric("足離地検出数", len(events['toe_offs']))
+            with col3:
+                st.metric("歩行周期数", len(cycles))
+            
+            # グラフ表示
+            st.subheader("検出結果の可視化")
+            
+            fig, ax = plt.subplots(figsize=(12, 6))
+            
+            # 踵とつま先のY座標をプロット
+            ax.plot(t, heel_y, label='踵 Y座標', linewidth=1.5, alpha=0.7)
+            ax.plot(t, toe_y, label='つま先 Y座標', linewidth=1.5, alpha=0.7)
+            
+            # 踵接地をマーク
+            for hs_frame in events['heel_strikes']:
+                ax.axvline(x=t[hs_frame], color='red', linestyle='--', alpha=0.5, linewidth=1)
+                ax.plot(t[hs_frame], heel_y[hs_frame], 'ro', markersize=8, label='踵接地' if hs_frame == events['heel_strikes'][0] else '')
+            
+            # 足離地をマーク
+            for to_frame in events['toe_offs']:
+                ax.axvline(x=t[to_frame], color='blue', linestyle='--', alpha=0.5, linewidth=1)
+                ax.plot(t[to_frame], toe_y[to_frame], 'bs', markersize=8, label='足離地' if to_frame == events['toe_offs'][0] else '')
+            
+            ax.set_xlabel('時間 (秒)', fontsize=12)
+            ax.set_ylabel('Y座標 (pixel)', fontsize=12)
+            ax.set_title('歩行イベント検出結果', fontsize=14, fontweight='bold')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            
+            st.pyplot(fig)
+            
+            # 歩行周期の詳細
+            if len(cycles) > 0:
+                st.subheader("歩行周期の詳細")
+                
+                cycles_df = pd.DataFrame(cycles)
+                cycles_df['開始時刻 (秒)'] = cycles_df['start_frame'] / fps
+                cycles_df['立脚期 (秒)'] = cycles_df['stance_duration'] / fps
+                cycles_df['遊脚期 (秒)'] = cycles_df['swing_duration'] / fps
+                cycles_df['ストライド時間 (秒)'] = cycles_df['stride_duration'] / fps
+                
+                display_df = cycles_df[[
+                    '開始時刻 (秒)', 
+                    '立脚期 (秒)', 
+                    '遊脚期 (秒)', 
+                    'ストライド時間 (秒)',
+                    'stance_percentage'
+                ]].copy()
+                display_df.columns = [
+                    '開始時刻', 
+                    '立脚期', 
+                    '遊脚期', 
+                    'ストライド時間',
+                    '立脚期割合 (%)'
+                ]
+                
+                st.dataframe(display_df, use_container_width=True)
+                
+                # 平均値
+                st.subheader("平均値")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    avg_stance = cycles_df['立脚期 (秒)'].mean()
+                    st.metric("平均立脚期", f"{avg_stance:.3f} 秒")
+                with col2:
+                    avg_swing = cycles_df['遊脚期 (秒)'].mean()
+                    st.metric("平均遊脚期", f"{avg_swing:.3f} 秒")
+                with col3:
+                    avg_stride = cycles_df['ストライド時間 (秒)'].mean()
+                    st.metric("平均ストライド時間", f"{avg_stride:.3f} 秒")
+    
+    # ========================================
     # フッター
     # ========================================
     st.markdown("---")
@@ -322,7 +447,13 @@ def main():
     - ✓ Savitzky-Golayフィルタによる平滑化
     - ✓ 大腿骨長による正規化
     
-    **次のステップ**: Phase 2（GaitEventDetector）の実装へ
+    ### ✅ Phase 2 チェックリスト
+    - ✓ 踵接地（Heel Strike）の自動検出
+    - ✓ 足離地（Toe Off）の自動検出
+    - ✓ 歩行周期の計算
+    - ✓ 立脚期・遊脚期の分析
+    
+    **次のステップ**: Phase 3（GaitParameterCalculator）の実装へ
     """)
 
 
