@@ -13,6 +13,9 @@ from gait_event_detector import GaitEventDetector
 # Phase 3の機能をインポート
 from gait_parameter_calculator import GaitParameterCalculator
 
+# Phase 4の機能をインポート
+from integrated_gait_analyzer import IntegratedGaitAnalyzer
+
 # ========================================
 # GaitMathCore クラス（変更なし）
 # ========================================
@@ -157,14 +160,15 @@ def main():
     # GaitMathCore 初期化
     math_core = GaitMathCore(fps=fps)
     
-    # タブ分け（Phase 2と3のタブを追加）
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    # タブ分け（Phase 2-4のタブを追加）
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📐 角度計算テスト", 
         "📏 セグメント長計算", 
         "🔄 正規化テスト",
         "📊 フィルタリングテスト",
         "🦶 歩行イベント検出（Phase 2）",
-        "📈 歩行パラメータ計算（Phase 3）"
+        "📈 歩行パラメータ計算（Phase 3）",
+        "📂 CSVデータ分析（Phase 4）"
     ])
     
     # ========================================
@@ -695,6 +699,282 @@ def main():
                     st.pyplot(fig)
     
     # ========================================
+    # タブ7: Phase 4 - CSVデータ分析
+    # ========================================
+    with tab7:
+        st.header("📂 Phase 4: CSVデータ分析（統合システム）")
+        st.markdown("実際のCSVデータを読み込んで、Phase 1-3の全機能を使った完全な分析を実行します")
+        
+        # ファイルアップロード
+        st.subheader("1. CSVファイルのアップロード")
+        uploaded_file = st.file_uploader(
+            "歩行データのCSVファイルを選択してください",
+            type=['csv'],
+            help="MediaPipeやOpenPoseなどから出力されたCSVファイル"
+        )
+        
+        if uploaded_file is not None:
+            # データのプレビュー
+            try:
+                df_preview = pd.read_csv(uploaded_file)
+                st.success(f"✅ ファイル読み込み成功: {len(df_preview)} 行 × {len(df_preview.columns)} 列")
+                
+                with st.expander("データプレビュー（先頭10行）"):
+                    st.dataframe(df_preview.head(10), use_container_width=True)
+                
+                # カラム名の取得
+                available_columns = list(df_preview.columns)
+                
+                # カラム選択
+                st.subheader("2. カラムの選択")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**踵（Heel）のカラム**")
+                    heel_x_col = st.selectbox("X座標", available_columns, key="heel_x")
+                    heel_y_col = st.selectbox("Y座標", available_columns, key="heel_y")
+                    heel_vis_col = st.selectbox("信頼度（オプション）", ['なし'] + available_columns, key="heel_vis")
+                
+                with col2:
+                    st.markdown("**つま先（Toe）のカラム**")
+                    toe_x_col = st.selectbox("X座標", available_columns, key="toe_x")
+                    toe_y_col = st.selectbox("Y座標", available_columns, key="toe_y")
+                    toe_vis_col = st.selectbox("信頼度（オプション）", ['なし'] + available_columns, key="toe_vis")
+                
+                # 分析設定
+                st.subheader("3. 分析設定")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    apply_smoothing = st.checkbox("平滑化フィルタを適用", value=True)
+                    if apply_smoothing:
+                        smooth_window = st.slider("窓長", 3, 15, 5, 2)
+                
+                with col2:
+                    use_normalization = st.checkbox("正規化を使用", value=False)
+                    norm_length = None
+                    if use_normalization:
+                        norm_length = st.number_input("基準長（pixel）", value=200.0, min_value=1.0)
+                
+                with col3:
+                    use_conversion = st.checkbox("ピクセル→メートル変換", value=False)
+                    conversion_factor = None
+                    if use_conversion:
+                        conversion_factor = st.number_input(
+                            "変換係数",
+                            value=0.01,
+                            format="%.4f",
+                            min_value=0.0001
+                        )
+                
+                # 分析実行ボタン
+                if st.button("🚀 完全分析を実行", type="primary", key="run_full_analysis"):
+                    with st.spinner("分析中... しばらくお待ちください"):
+                        try:
+                            # IntegratedGaitAnalyzerの初期化
+                            analyzer = IntegratedGaitAnalyzer(
+                                fps=float(fps),
+                                use_z_axis=False,
+                                min_visibility=0.5,
+                                pixel_to_meter=conversion_factor
+                            )
+                            
+                            # ファイルを一時保存
+                            import tempfile
+                            import os
+                            
+                            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv') as tmp_file:
+                                uploaded_file.seek(0)
+                                tmp_file.write(uploaded_file.read().decode('utf-8'))
+                                tmp_path = tmp_file.name
+                            
+                            # カラム名の辞書を作成
+                            heel_cols = {'x': heel_x_col, 'y': heel_y_col}
+                            if heel_vis_col != 'なし':
+                                heel_cols['visibility'] = heel_vis_col
+                            
+                            toe_cols = {'x': toe_x_col, 'y': toe_y_col}
+                            if toe_vis_col != 'なし':
+                                toe_cols['visibility'] = toe_vis_col
+                            
+                            # 完全分析の実行
+                            report = analyzer.run_full_analysis(
+                                csv_path=tmp_path,
+                                heel_cols=heel_cols,
+                                toe_cols=toe_cols,
+                                normalize_by=norm_length,
+                                smooth=apply_smoothing
+                            )
+                            
+                            # 一時ファイルを削除
+                            os.unlink(tmp_path)
+                            
+                            # 結果の表示
+                            st.success("🎉 分析完了！")
+                            
+                            # 統計サマリー
+                            st.subheader("📊 統計サマリー")
+                            
+                            stats = report['statistics']
+                            
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("総フレーム数", stats['総フレーム数'])
+                            with col2:
+                                st.metric("総時間", f"{stats['総時間 (秒)']:.1f} 秒")
+                            with col3:
+                                st.metric("歩行周期数", stats['完全な歩行周期数'])
+                            with col4:
+                                if 'ストライド時間CV (%)' in stats:
+                                    st.metric("変動係数", f"{stats['ストライド時間CV (%)']:.2f}%")
+                            
+                            # サマリーテーブル
+                            st.subheader("📋 パラメータサマリー")
+                            st.dataframe(report['summary'], use_container_width=True, hide_index=True)
+                            
+                            # イベント情報
+                            if 'events' in report and len(report['events']) > 0:
+                                st.subheader("🦶 検出されたイベント")
+                                
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    heel_strikes = report['events'][report['events']['event_type'] == 'heel_strike']
+                                    st.write(f"**踵接地: {len(heel_strikes)}回**")
+                                    if len(heel_strikes) > 0:
+                                        st.dataframe(
+                                            heel_strikes[['frame', 'time']].head(10),
+                                            use_container_width=True,
+                                            hide_index=True
+                                        )
+                                
+                                with col2:
+                                    toe_offs = report['events'][report['events']['event_type'] == 'toe_off']
+                                    st.write(f"**足離地: {len(toe_offs)}回**")
+                                    if len(toe_offs) > 0:
+                                        st.dataframe(
+                                            toe_offs[['frame', 'time']].head(10),
+                                            use_container_width=True,
+                                            hide_index=True
+                                        )
+                            
+                            # 周期詳細
+                            if 'cycles_detail' in report and len(report['cycles_detail']) > 0:
+                                st.subheader("🔄 歩行周期の詳細")
+                                st.dataframe(
+                                    report['cycles_detail'],
+                                    use_container_width=True,
+                                    hide_index=True
+                                )
+                            
+                            # グラフ表示
+                            st.subheader("📈 可視化")
+                            
+                            if analyzer.processed_data is not None and analyzer.events is not None:
+                                fig, axes = plt.subplots(2, 1, figsize=(14, 10))
+                                
+                                # 時間軸の作成
+                                n_frames = len(analyzer.processed_data)
+                                time_axis = np.arange(n_frames) / fps
+                                
+                                # 上段: 踵とつま先のY座標 + イベント
+                                ax1 = axes[0]
+                                heel_y_data = analyzer.processed_data[heel_y_col].values
+                                toe_y_data = analyzer.processed_data[toe_y_col].values
+                                
+                                ax1.plot(time_axis, heel_y_data, label='踵 Y座標', linewidth=1.5, alpha=0.7)
+                                ax1.plot(time_axis, toe_y_data, label='つま先 Y座標', linewidth=1.5, alpha=0.7)
+                                
+                                # 踵接地をマーク
+                                for hs_frame in analyzer.events['heel_strikes']:
+                                    ax1.axvline(x=time_axis[hs_frame], color='red', linestyle='--', alpha=0.3)
+                                    if hs_frame == analyzer.events['heel_strikes'][0]:
+                                        ax1.plot(time_axis[hs_frame], heel_y_data[hs_frame], 'ro', 
+                                               markersize=8, label='踵接地')
+                                    else:
+                                        ax1.plot(time_axis[hs_frame], heel_y_data[hs_frame], 'ro', markersize=8)
+                                
+                                # 足離地をマーク
+                                for to_frame in analyzer.events['toe_offs']:
+                                    ax1.axvline(x=time_axis[to_frame], color='blue', linestyle='--', alpha=0.3)
+                                    if to_frame == analyzer.events['toe_offs'][0]:
+                                        ax1.plot(time_axis[to_frame], toe_y_data[to_frame], 'bs', 
+                                               markersize=8, label='足離地')
+                                    else:
+                                        ax1.plot(time_axis[to_frame], toe_y_data[to_frame], 'bs', markersize=8)
+                                
+                                ax1.set_xlabel('時間 (秒)', fontsize=12)
+                                ax1.set_ylabel('Y座標 (pixel)', fontsize=12)
+                                ax1.set_title('歩行イベント検出結果', fontsize=14, fontweight='bold')
+                                ax1.legend(loc='best')
+                                ax1.grid(True, alpha=0.3)
+                                
+                                # 下段: ストライド時間の推移
+                                ax2 = axes[1]
+                                if analyzer.parameters and len(analyzer.parameters) > 0:
+                                    stride_times = [p.stride_time for p in analyzer.parameters]
+                                    cycle_numbers = range(1, len(stride_times) + 1)
+                                    
+                                    ax2.plot(cycle_numbers, stride_times, 'o-', linewidth=2, markersize=8)
+                                    ax2.axhline(y=np.mean(stride_times), color='r', linestyle='--', 
+                                              linewidth=2, label=f'平均: {np.mean(stride_times):.3f}秒')
+                                    
+                                    ax2.set_xlabel('周期番号', fontsize=12)
+                                    ax2.set_ylabel('ストライド時間 (秒)', fontsize=12)
+                                    ax2.set_title('ストライド時間の推移', fontsize=14, fontweight='bold')
+                                    ax2.legend()
+                                    ax2.grid(True, alpha=0.3)
+                                
+                                plt.tight_layout()
+                                st.pyplot(fig)
+                            
+                            # ダウンロードボタン
+                            st.subheader("💾 レポートのダウンロード")
+                            
+                            # CSVとしてダウンロード
+                            if 'cycles_detail' in report:
+                                csv_data = report['cycles_detail'].to_csv(index=False)
+                                st.download_button(
+                                    label="📥 周期詳細をCSVでダウンロード",
+                                    data=csv_data,
+                                    file_name="gait_cycles_detail.csv",
+                                    mime="text/csv"
+                                )
+                        
+                        except Exception as e:
+                            st.error(f"❌ 分析中にエラーが発生しました: {str(e)}")
+                            import traceback
+                            with st.expander("詳細なエラー情報"):
+                                st.code(traceback.format_exc())
+            
+            except Exception as e:
+                st.error(f"❌ ファイルの読み込みに失敗しました: {str(e)}")
+        
+        else:
+            st.info("👆 CSVファイルをアップロードして分析を開始してください")
+            
+            # サンプルデータの説明
+            with st.expander("📖 必要なCSVフォーマット"):
+                st.markdown("""
+                CSVファイルには以下のカラムが必要です：
+                
+                - **踵のX座標**: 例 `heel_x`, `right_heel_x`
+                - **踵のY座標**: 例 `heel_y`, `right_heel_y`
+                - **つま先のX座標**: 例 `toe_x`, `right_toe_x`
+                - **つま先のY座標**: 例 `toe_y`, `right_toe_y`
+                - **信頼度（オプション）**: 例 `heel_visibility`, `toe_visibility`
+                
+                サンプル:
+                ```
+                frame,heel_x,heel_y,heel_visibility,toe_x,toe_y,toe_visibility
+                0,100.5,200.3,0.95,120.2,205.1,0.92
+                1,101.2,198.7,0.94,121.1,203.5,0.93
+                ...
+                ```
+                """)
+    
+    # ========================================
     # フッター
     # ========================================
     st.markdown("---")
@@ -719,7 +999,14 @@ def main():
     - ✓ 変動性（CV）の計算
     - ✓ サマリーレポートの生成
     
-    **次のステップ**: Phase 4（統合テスト）の実装へ
+    ### ✅ Phase 4 チェックリスト
+    - ✓ CSVファイルの読み込み
+    - ✓ データ前処理と平滑化
+    - ✓ Phase 1-3の統合
+    - ✓ 完全な分析レポート生成
+    - ✓ 結果の可視化とCSVエクスポート
+    
+    **🎉 全フェーズ完成！実データで歩行分析が可能になりました！**
     """)
 
 
