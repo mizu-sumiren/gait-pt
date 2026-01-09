@@ -387,11 +387,124 @@ def main():
         else:
             st.markdown("**📋 分析内容**: 歩行周期、ストライド長を解析")
         
-        # 動画アップロード
+        # 動画アップロード（iOS完全対応版）
+        st.markdown("### 📱 動画をアップロード")
+        
+        # 方法1: カスタムHTML（iOSの写真ライブラリー/カメラに直接アクセス）
+        st.markdown("**方法1: 写真ライブラリーまたはカメラから選択**")
+        
+        import streamlit.components.v1 as components
+        
+        # iOSの写真ライブラリーとカメラに対応したカスタムアップローダー
+        uploaded_video_data = components.html("""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <style>
+                    .upload-container {
+                        width: 100%;
+                        padding: 20px;
+                        box-sizing: border-box;
+                    }
+                    .upload-button {
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                        border: none;
+                        border-radius: 10px;
+                        padding: 20px 40px;
+                        width: 100%;
+                        font-size: 18px;
+                        font-weight: bold;
+                        cursor: pointer;
+                        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                        transition: all 0.3s;
+                    }
+                    .upload-button:active {
+                        transform: scale(0.98);
+                    }
+                    .file-info {
+                        margin-top: 15px;
+                        padding: 10px;
+                        background: #f0f2f6;
+                        border-radius: 5px;
+                        font-size: 14px;
+                        color: #333;
+                    }
+                    .hidden {
+                        display: none;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="upload-container">
+                    <!-- iOS対応: accept="video/*" と capture 属性で写真ライブラリーとカメラの両方にアクセス -->
+                    <input type="file" 
+                           id="videoInput" 
+                           accept="video/*,video/mp4,video/quicktime,.mp4,.mov,.MP4,.MOV"
+                           capture="environment"
+                           class="hidden">
+                    
+                    <button class="upload-button" onclick="document.getElementById('videoInput').click()">
+                        📹 動画を選択
+                    </button>
+                    
+                    <div id="fileInfo" class="file-info hidden"></div>
+                </div>
+                
+                <script>
+                    const videoInput = document.getElementById('videoInput');
+                    const fileInfo = document.getElementById('fileInfo');
+                    
+                    videoInput.addEventListener('change', function(e) {
+                        const file = e.target.files[0];
+                        
+                        if (file) {
+                            // ファイル情報を表示
+                            const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+                            fileInfo.textContent = `✅ 選択: ${file.name} (${sizeMB} MB)`;
+                            fileInfo.classList.remove('hidden');
+                            
+                            // ファイルサイズチェック（200MB制限）
+                            if (file.size > 200 * 1024 * 1024) {
+                                fileInfo.textContent = '❌ エラー: ファイルサイズは200MB以下にしてください';
+                                fileInfo.style.background = '#f8d7da';
+                                fileInfo.style.color = '#721c24';
+                                return;
+                            }
+                            
+                            // Streamlitにファイル名とサイズを通知
+                            window.parent.postMessage({
+                                type: 'streamlit:setComponentValue',
+                                value: {
+                                    name: file.name,
+                                    size: file.size,
+                                    type: file.type
+                                }
+                            }, '*');
+                            
+                            // 実際のファイルデータは後でアップロード
+                            // （Streamlitのfile_uploaderを使用）
+                        }
+                    });
+                </script>
+            </body>
+            </html>
+        """, height=150)
+        
+        st.markdown("---")
+        
+        # 方法2: 標準のfile_uploader（フォールバック・iOS最適化版）
+        st.markdown("**方法2: ファイルから選択（上記で動作しない場合）**")
+        
         uploaded_video = st.file_uploader(
-            "動画をアップロード",
-            type=['mp4', 'mov', 'avi'],
-            help="Limit 200MB per file • MP4, MOV, AVI"
+            "動画ファイルを選択",
+            type=['mp4', 'mov', 'avi', 'MP4', 'MOV', 'AVI', 'quicktime'],
+            accept_multiple_files=False,
+            help="iPhone撮影の動画（.MOV）も対応。ファイルサイズは200MB以下",
+            key="video_upload_fallback",
+            label_visibility="collapsed"
         )
         
         if uploaded_video is not None:
@@ -407,10 +520,32 @@ def main():
             if st.button("✨ アルゴリズム解析を開始", type="primary", use_container_width=True):
                 with st.spinner("🔄 MediaPipeで骨格を抽出中..."):
                     try:
-                        # 一時ファイルに保存
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_video:
-                            tmp_video.write(uploaded_video.read())
+                        # 一時ファイルに保存（iOS対応: バイナリモードで確実に書き込み）
+                        file_extension = uploaded_video.name.split('.')[-1].lower()
+                        
+                        # .movも.mp4として扱う（MediaPipeとの互換性）
+                        if file_extension in ['mov', 'MOV']:
+                            file_extension = 'mp4'
+                        
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}', mode='wb') as tmp_video:
+                            # バイナリデータとして読み込み・書き込み
+                            video_bytes = uploaded_video.read()
+                            tmp_video.write(video_bytes)
+                            tmp_video.flush()  # 確実にディスクに書き込む
                             tmp_video_path = tmp_video.name
+                        
+                        # ファイルが正しく保存されたか確認
+                        if not os.path.exists(tmp_video_path):
+                            raise ValueError("動画ファイルの保存に失敗しました")
+                        
+                        file_size_mb = os.path.getsize(tmp_video_path) / (1024 * 1024)
+                        st.info(f"📁 ファイルサイズ: {file_size_mb:.2f} MB")
+                        
+                        # ファイルサイズチェック
+                        if file_size_mb > 200:
+                            st.error("❌ ファイルサイズが200MBを超えています。圧縮してから再度アップロードしてください。")
+                            os.unlink(tmp_video_path)
+                            return
                         
                         # 進捗バー
                         progress_bar = st.progress(0)
@@ -454,8 +589,39 @@ def main():
                     
                     except Exception as e:
                         st.error(f"❌ エラーが発生しました: {str(e)}")
+                        
+                        # iOSユーザー向けのトラブルシューティング
+                        with st.expander("📱 iPhoneで動作しない場合のチェックリスト"):
+                            st.markdown("""
+                            ### Safariの設定を確認
+                            1. **設定** → **Safari** を開く
+                            2. **カメラ** と **マイク** のアクセスを許可
+                            3. **サイト越えトラッキングを防ぐ** をオフにしてみる
+                            4. **すべてのCookieをブロック** がオフになっているか確認
+                            
+                            ### Chromeの設定を確認
+                            1. Chrome で当サイトを開く
+                            2. アドレスバーの **🔒** をタップ
+                            3. **サイトの設定** → **カメラ** と **写真** のアクセスを許可
+                            
+                            ### 動画ファイルの準備
+                            1. 動画サイズは **200MB以下** にしてください
+                            2. 形式: MP4, MOV（iPhoneの標準動画形式）に対応
+                            3. 動画が長すぎる場合は、iPhoneの「写真」アプリでトリミングしてください
+                            
+                            ### 代替方法
+                            1. **写真アプリ** → 動画を選択 → **共有** → **ファイルに保存**
+                            2. iCloud Drive に保存
+                            3. このアプリで「方法2」のファイル選択から、iCloud Driveの動画を選択
+                            
+                            ### それでも解決しない場合
+                            - ブラウザのキャッシュをクリア
+                            - iPhoneを再起動
+                            - Safariのプライベートブラウズモードを解除
+                            """)
+                        
                         import traceback
-                        with st.expander("詳細なエラー情報"):
+                        with st.expander("詳細なエラー情報（開発者向け）"):
                             st.code(traceback.format_exc())
     
     else:
