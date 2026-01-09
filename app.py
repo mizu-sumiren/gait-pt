@@ -1,181 +1,444 @@
-import streamlit as st
-import cv2
-import mediapipe as mp
 import numpy as np
-import tempfile
+import pandas as pd
+from scipy.signal import savgol_filter
+from scipy.interpolate import UnivariateSpline
+from typing import Dict, List, Tuple, Optional, Union
+import warnings
 
-# --- 1. ページ設定 ---
-st.set_page_config(page_title="女性専用 AI歩行ドック", layout="wide")
+class GaitMathCore:
+    """
+    歩行分析のための数学的計算基盤クラス
+    
+    設計原則:
+    - 全ての角度は度数法(degrees)で出力
+    - 欠損値に対する安全策を実装
+    - 60fps撮影を標準とした時系列処理
+    - 大腿骨長による正規化を標準搭載
+    
+    Author: Based on PT clinical requirements
+    Reference: Sakane (2025), Rancho Los Amigos Gait Analysis
+    """
+    
+    # 信頼度閾値（MediaPipe Visibility）
+    VISIBILITY_THRESHOLD = 0.5
+    
+    # 60fps用のフィルタパラメータ（約83ms窓）
+    SAVGOL_WINDOW = 5
+    SAVGOL_POLYORDER = 2
+    
+    def __init__(self, fps: int = 60):
+        """
+        Parameters:
+        -----------
+        fps : int
+            動画のフレームレート（デフォルト60fps）
+        """
+        self.fps = fps
+        self.frame_interval = 1.0 / fps  # 秒
+        
+    @staticmethod
+    def calculate_angle_3d(
+        p1: Dict[str, float], 
+        p2: Dict[str, float], 
+        p3: Dict[str, float],
+        use_z_axis: bool = False,
+        min_visibility: float = VISIBILITY_THRESHOLD
+    ) -> Optional[float]:
+        """
+        3点から関節角度を計算（p2が頂点）
+        
+        Parameters:
+        -----------
+        p1, p2, p3 : dict
+            {'x': float, 'y': float, 'z': float, 'visibility': float}
+            p2が関節点（例: 膝）、p1とp3が隣接点（例: 股関節と足首）
+        use_z_axis : bool
+            True: 3次元ベクトルで計算
+            False: XY平面（側面分析）のみ使用
+        min_visibility : float
+            最低信頼度（デフォルト0.5）
+            
+        Returns:
+        --------
+        float : 関節角度（度数法、0-180°）
+            内角を返す（伸展0°、屈曲180°方向）
+        None : いずれかの点の信頼度が閾値未満の場合
+        
+        Notes:
+        ------
+        - ベクトルの内積を用いた計算: cos(θ) = (v1·v2) / (|v1||v2|)
+        - 180°表記を保証（np.arccos → np.degrees）
+        - Z軸を無視する場合、側面撮影時の奥行き誤差を排除
+        """
+        # 信頼度チェック
+        if any(p.get('visibility', 0) < min_visibility for p in [p1, p2, p3]):
+            return None
+        
+        # ベクトル構築
+        if use_z_axis:
+            v1 = np.array([p1['x'] - p2['x'], p1['y'] - p2['y'], p1['z'] - p2['z']])
+            v2 = np.array([p3['x'] - p2['x'], p3['y'] - p2['y'], p3['z'] - p2['z']])
+        else:
+            # XY平面のみ（側面分析）
+            v1 = np.array([p1['x'] - p2['x'], p1['y'] - p2['y']])
+            v2 = np.array([p3['x'] - p2['x'], p3['y'] - p2['y']])
+        
+        # ゼロベクトルチェック
+        norm_v1 = np.linalg.norm(v1)
+        norm_v2 = np.linalg.norm(v2)
+        
+        if norm_v1 < 1e-6 or norm_v2 < 1e-6:
+            warnings.warn("ベクトルの長さがほぼゼロです。座標が重複している可能性があります。")
+            return None
+        
+        # 内積計算
+        cos_angle = np.dot(v1, v2) / (norm_v1 * norm_v2)
+        
+        # 数値誤差対策（cos_angleが[-1, 1]を超えないようクリップ）
+        cos_angle = np.clip(cos_angle, -1.0, 1.0)
+        
+        # ラジアン → 度数法変換（必須）
+        angle_rad = np.arccos(cos_angle)
+        angle_deg = np.degrees(angle_rad)
+        
+        return angle_deg
+    
+    @staticmethod
+    def savitzky_golay_filter(
+        data: Union[List[float], np.ndarray],
+        window_length: int = SAVGOL_WINDOW,
+        polyorder: int = SAVGOL_POLYORDER,
+        handle_nan: bool = True
+    ) -> np.ndarray:
+        """
+        Savitzky-Golayフィルタによるノイズ除去
+        
+        Parameters:
+        -----------
+        data : array-like
+            時系列データ（例: 関節のY座標列）
+        window_length : int
+            窓の幅（奇数、60fpsでは5フレーム≈83ms）
+        polyorder : int
+            多項式の次数（2次が標準）
+        handle_nan : bool
+            NaNを含む場合、線形補間してからフィルタリング
+            
+        Returns:
+        --------
+        np.ndarray : 平滑化されたデータ
+        
+        Notes:
+        ------
+        - window_lengthはデータ長より小さく、奇数である必要がある
+        - 欠損値がある場合は事前に補間処理を推奨
+        """
+        data_array = np.array(data, dtype=float)
+        
+        # NaN処理
+        if handle_nan and np.any(np.isnan(data_array)):
+            # NaNのインデックスを取得
+            valid_idx = ~np.isnan(data_array)
+            if np.sum(valid_idx) < 2:
+                warnings.warn("有効なデータ点が2点未満のため、フィルタリングをスキップします。")
+                return data_array
+            
+            # 線形補間
+            x_valid = np.where(valid_idx)[0]
+            y_valid = data_array[valid_idx]
+            x_all = np.arange(len(data_array))
+            data_array = np.interp(x_all, x_valid, y_valid)
+        
+        # データ長チェック
+        if len(data_array) < window_length:
+            warnings.warn(f"データ長({len(data_array)})が窓幅({window_length})未満です。フィルタリングをスキップします。")
+            return data_array
+        
+        # 窓幅を奇数に調整
+        if window_length % 2 == 0:
+            window_length += 1
+        
+        # フィルタ適用
+        try:
+            filtered = savgol_filter(data_array, window_length, polyorder)
+        except Exception as e:
+            warnings.warn(f"Savitzky-Golayフィルタ適用エラー: {e}")
+            return data_array
+        
+        return filtered
+    
+    @staticmethod
+    def spline_interpolate(
+        time_points: np.ndarray,
+        data: np.ndarray,
+        missing_mask: np.ndarray,
+        smoothing_factor: float = 0.0
+    ) -> np.ndarray:
+        """
+        スプライン補間による欠損値補完
+        
+        Parameters:
+        -----------
+        time_points : np.ndarray
+            時間軸（フレーム番号またはタイムスタンプ）
+        data : np.ndarray
+            元データ（NaNまたは欠損値を含む）
+        missing_mask : np.ndarray (bool)
+            Trueが欠損位置
+        smoothing_factor : float
+            スプラインの平滑化係数（0で厳密補間）
+            
+        Returns:
+        --------
+        np.ndarray : 補間されたデータ
+        
+        Notes:
+        ------
+        - Visibility < 0.5の点を欠損として扱う想定
+        - 有効点が3点未満の場合は線形補間にフォールバック
+        """
+        valid_mask = ~missing_mask
+        valid_points = time_points[valid_mask]
+        valid_data = data[valid_mask]
+        
+        if len(valid_points) < 3:
+            # スプライン補間には最低3点必要
+            warnings.warn("有効点が3点未満のため、線形補間を使用します。")
+            return np.interp(time_points, valid_points, valid_data)
+        
+        try:
+            # UnivariateSpline（3次スプライン）
+            spline = UnivariateSpline(valid_points, valid_data, s=smoothing_factor, k=3)
+            interpolated = spline(time_points)
+        except Exception as e:
+            warnings.warn(f"スプライン補間エラー: {e}。線形補間にフォールバック。")
+            interpolated = np.interp(time_points, valid_points, valid_data)
+        
+        return interpolated
+    
+    @staticmethod
+    def calculate_segment_length_3d(
+        p1: Dict[str, float],
+        p2: Dict[str, float],
+        use_z_axis: bool = False,
+        min_visibility: float = VISIBILITY_THRESHOLD
+    ) -> Optional[float]:
+        """
+        2点間の距離（セグメント長）を計算
+        
+        Parameters:
+        -----------
+        p1, p2 : dict
+            座標と信頼度を含む辞書
+        use_z_axis : bool
+            3次元距離か2次元距離か
+        min_visibility : float
+            最低信頼度
+            
+        Returns:
+        --------
+        float : ユークリッド距離
+        None : 信頼度不足の場合
+        
+        Notes:
+        ------
+        - 大腿骨長（HIP→KNEE）の算出に使用
+        - 正規化の基準単位として利用
+        """
+        if any(p.get('visibility', 0) < min_visibility for p in [p1, p2]):
+            return None
+        
+        if use_z_axis:
+            distance = np.sqrt(
+                (p1['x'] - p2['x'])**2 +
+                (p1['y'] - p2['y'])**2 +
+                (p1['z'] - p2['z'])**2
+            )
+        else:
+            distance = np.sqrt(
+                (p1['x'] - p2['x'])**2 +
+                (p1['y'] - p2['y'])**2
+            )
+        
+        return distance
+    
+    @staticmethod
+    def normalize_by_segment_length(
+        value: float,
+        segment_length: float,
+        segment_name: str = "大腿骨長"
+    ) -> Optional[float]:
+        """
+        身体比率による正規化
+        
+        Parameters:
+        -----------
+        value : float
+            正規化したい値（例: 体幹の上下移動量 [pixel]）
+        segment_length : float
+            基準となるセグメント長（例: 大腿骨長 [pixel]）
+        segment_name : str
+            セグメント名（エラーメッセージ用）
+            
+        Returns:
+        --------
+        float : 正規化された値（無次元比率）
+        None : セグメント長が不正な場合
+        
+        Notes:
+        ------
+        - カメラ距離の影響を除去
+        - 体格差を吸収した比較が可能
+        
+        Example:
+        --------
+        体幹の上下移動が50ピクセル、大腿骨長が200ピクセル
+        → 正規化値 = 50/200 = 0.25（体幹長の25%相当）
+        """
+        if segment_length <= 0 or np.isnan(segment_length):
+            warnings.warn(f"{segment_name}が不正な値です: {segment_length}")
+            return None
+        
+        normalized = value / segment_length
+        return normalized
+    
+    @staticmethod
+    def calculate_velocity(
+        position_series: np.ndarray,
+        fps: int = 60
+    ) -> np.ndarray:
+        """
+        位置データから速度を算出（中心差分）
+        
+        Parameters:
+        -----------
+        position_series : np.ndarray
+            時系列の位置データ（例: 踵のY座標）
+        fps : int
+            フレームレート
+            
+        Returns:
+        --------
+        np.ndarray : 速度 [単位/秒]
+        
+        Notes:
+        ------
+        - Initial Contact検出に使用（速度≈0）
+        - 中心差分: v[i] = (pos[i+1] - pos[i-1]) / (2Δt)
+        """
+        dt = 1.0 / fps
+        velocity = np.gradient(position_series, dt)
+        return velocity
+    
+    def preprocess_landmark_timeseries(
+        self,
+        df: pd.DataFrame,
+        coord_columns: List[str],
+        visibility_column: str = 'visibility',
+        apply_filter: bool = True
+    ) -> pd.DataFrame:
+        """
+        ランドマーク時系列データの前処理パイプライン
+        
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            フレームごとのランドマーク座標
+            必須列: coord_columns + [visibility_column]
+        coord_columns : list of str
+            処理対象の座標列（例: ['x', 'y', 'z']）
+        visibility_column : str
+            信頼度列の名前
+        apply_filter : bool
+            Savitzky-Golayフィルタを適用するか
+            
+        Returns:
+        --------
+        pd.DataFrame : 前処理済みデータ
+            - 欠損値補間済み
+            - （オプション）平滑化済み
+            
+        Processing Steps:
+        -----------------
+        1. Visibility < 0.5 の点を欠損としてマーク
+        2. スプライン補間で補完
+        3. Savitzky-Golayフィルタで平滑化
+        
+        Notes:
+        ------
+        - このメソッドは各ランドマーク（例: 右膝）ごとに呼び出す
+        - 入力dfは単一ランドマークの時系列を想定
+        """
+        df_processed = df.copy()
+        
+        # 欠損マスク作成
+        missing_mask = df_processed[visibility_column] < self.VISIBILITY_THRESHOLD
+        
+        # 時間軸（フレーム番号）
+        time_points = np.arange(len(df_processed))
+        
+        # 各座標軸を補間
+        for col in coord_columns:
+            if col not in df_processed.columns:
+                continue
+            
+            data = df_processed[col].values
+            
+            # スプライン補間
+            interpolated = self.spline_interpolate(
+                time_points, data, missing_mask, smoothing_factor=0.0
+            )
+            
+            df_processed[col] = interpolated
+        
+        # Savitzky-Golayフィルタ適用
+        if apply_filter:
+            for col in coord_columns:
+                if col not in df_processed.columns:
+                    continue
+                
+                filtered = self.savitzky_golay_filter(
+                    df_processed[col].values,
+                    window_length=self.SAVGOL_WINDOW,
+                    polyorder=self.SAVGOL_POLYORDER
+                )
+                
+                df_processed[col] = filtered
+        
+        return df_processed
 
-# --- 2. 分析エンジンの準備 ---
-@st.cache_resource
-def load_pose_model():
-    mp_pose = mp.solutions.pose
-    return mp_pose.Pose(
-        min_detection_confidence=0.5, 
-        min_tracking_confidence=0.5, 
-        model_complexity=1 
+
+# ========================================
+# 使用例（テストケース）
+# ========================================
+
+if __name__ == "__main__":
+    # 初期化
+    math_core = GaitMathCore(fps=60)
+    
+    # テスト1: 角度計算（膝関節90度屈曲を想定）
+    hip = {'x': 0.5, 'y': 0.5, 'z': 0.0, 'visibility': 0.9}
+    knee = {'x': 0.5, 'y': 0.3, 'z': 0.0, 'visibility': 0.9}
+    ankle = {'x': 0.7, 'y': 0.3, 'z': 0.0, 'visibility': 0.9}
+    
+    angle = math_core.calculate_angle_3d(hip, knee, ankle, use_z_axis=False)
+    print(f"膝関節角度: {angle:.2f}°")  # 期待値: 約90°
+    
+    # テスト2: セグメント長計算
+    femur_length = math_core.calculate_segment_length_3d(hip, knee, use_z_axis=False)
+    print(f"大腿骨長（2D）: {femur_length:.4f}")
+    
+    # テスト3: 正規化
+    trunk_movement = 0.05  # 仮の上下移動量
+    normalized_movement = math_core.normalize_by_segment_length(
+        trunk_movement, femur_length, "大腿骨長"
     )
-
-def calculate_angle(a, b, c):
-    """3点の座標から角度を算出（股関節屈曲用）"""
-    a, b, c = np.array(a), np.array(b), np.array(c)
-    radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
-    angle = np.abs(radians*180.0/np.pi)
-    return 360-angle if angle > 180.0 else angle
-
-def get_line_angle(p1, p2):
-    """2点間のベクトルの水平に対する角度（体幹回旋の近似用）"""
-    return np.degrees(np.arctan2(p2[1] - p1[1], p2[0] - p1[0]))
-
-# --- 3. UI表示 ---
-st.title("💃 女性専用 AI歩行ドック [Hybrid-Pro]")
-st.info("理学療法士の臨床知見 × 最新エビデンス：動画から動的にリスクを算出します。")
-
-col1, col2 = st.columns(2)
-with col1:
-    st.markdown("### 📸 側面（横から）")
-    side_video = st.file_uploader("側面動画をアップロード", type=["mp4", "mov"], key="side_up")
-with col2:
-    st.markdown("### 📸 正面（前から）")
-    front_video = st.file_uploader("正面動画をアップロード", type=["mp4", "mov"], key="front_up")
-
-# 解析に使用する変数の初期化（固定値を排除）
-max_flexion_angle = 0.0
-calculated_cv = 0.0
-calculated_phase = 0.0
-vertical_sway_mean = 0.0
-
-# --- 4. 解析実行 ---
-if st.button("✨ アルゴリズム解析を開始", use_container_width=True):
-    if not side_video and not front_video:
-        st.warning("解析する動画をアップロードしてください。")
+    print(f"正規化された体幹移動: {normalized_movement:.4f}")
     
-    pose_engine = load_pose_model()
-    mp_pose = mp.solutions.pose
-    mp_drawing = mp.solutions.drawing_utils
-
-    # --- 側面解析：第1歩目の屈曲 ---
-    if side_video:
-        st.subheader("【側面分析：Sakane(2025)モデル】")
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tfile:
-            tfile.write(side_video.read())
-            cap = cv2.VideoCapture(tfile.name)
-        
-        best_frame_flex = None
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret: break
-            
-            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = pose_engine.process(image)
-            
-            if results.pose_landmarks:
-                lm = results.pose_landmarks.landmark
-                # 座標取得
-                s = [lm[mp_pose.PoseLandmark.RIGHT_SHOULDER].x, lm[mp_pose.PoseLandmark.RIGHT_SHOULDER].y]
-                h = [lm[mp_pose.PoseLandmark.RIGHT_HIP].x, lm[mp_pose.PoseLandmark.RIGHT_HIP].y]
-                k = [lm[mp_pose.PoseLandmark.RIGHT_KNEE].x, lm[mp_pose.PoseLandmark.RIGHT_KNEE].y]
-                
-                # 簡易的な屈曲判定（向きに依存しない絶対角度の乖離）
-                current_angle = calculate_angle(s, h, k)
-                flex_val = np.abs(180 - current_angle)
-                
-                if flex_val > max_flexion_angle:
-                    max_flexion_angle = flex_val
-                    best_frame_flex = image.copy()
-                    mp_drawing.draw_landmarks(best_frame_flex, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-        cap.release()
-        
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.metric("第1歩：股関節屈曲角度", f"{max_flexion_angle:.1f}°")
-        with c2:
-            if best_frame_flex is not None:
-                st.image(best_frame_flex, caption="AIが特定した最大屈曲", use_container_width=True)
-
-    # --- 正面解析：CV値・相対位相差 ---
-    if front_video:
-        st.divider()
-        st.subheader("【正面分析：Park/Smith/Xuモデル】")
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tfile_f:
-            tfile_f.write(front_video.read())
-            cap_f = cv2.VideoCapture(tfile_f.name)
-        
-        step_widths = []
-        phase_diffs = []
-        
-        while cap_f.isOpened():
-            ret, frame = cap_f.read()
-            if not ret: break
-            
-            image_f = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results_f = pose_engine.process(image_f)
-            
-            if results_f.pose_landmarks:
-                lm = results_f.pose_landmarks.landmark
-                
-                # 1. 位相差の計算（肩のライン角 vs 骨盤のライン角）
-                ls = [lm[mp_pose.PoseLandmark.LEFT_SHOULDER].x, lm[mp_pose.PoseLandmark.LEFT_SHOULDER].y]
-                rs = [lm[mp_pose.PoseLandmark.RIGHT_SHOULDER].x, lm[mp_pose.PoseLandmark.RIGHT_SHOULDER].y]
-                lh = [lm[mp_pose.PoseLandmark.LEFT_HIP].x, lm[mp_pose.PoseLandmark.LEFT_HIP].y]
-                rh = [lm[mp_pose.PoseLandmark.RIGHT_HIP].x, lm[mp_pose.PoseLandmark.RIGHT_HIP].y]
-                
-                s_angle = get_line_angle(ls, rs)
-                h_angle = get_line_angle(lh, rh)
-                phase_diffs.append(abs(s_angle - h_angle))
-                
-                # 2. ステップ幅の計算（両踵のX座標距離）
-                l_heel = lm[mp_pose.PoseLandmark.LEFT_HEEL].x
-                r_heel = lm[mp_pose.PoseLandmark.RIGHT_HEEL].x
-                step_widths.append(abs(l_heel - r_heel))
-                
-        cap_f.release()
-
-        # 数値の集計
-        if step_widths:
-            # CV値計算: (標準偏差 / 平均) * 100
-            calculated_cv = (np.std(step_widths) / np.mean(step_widths)) * 100 if np.mean(step_widths) != 0 else 0
-        if phase_diffs:
-            # 平均相対位相差
-            calculated_phase = np.mean(phase_diffs)
-
-        f1, f2 = st.columns(2)
-        with f1:
-            st.metric("歩幅CV値（変動性）", f"{calculated_cv:.1f}%", delta=f"{calculated_cv-21.7:.1f}%", delta_color="inverse")
-            st.caption("※閾値 21.7% (Park 2025)")
-        with f2:
-            st.metric("脊柱協調性(位相差)", f"{calculated_phase:.1f}°", delta=f"{calculated_phase-20:.1f}°")
-            st.caption("※閾値 20.0° (Smith/Xu)")
-
-    # --- 5. 総合リスク判定レポート ---
-    st.divider()
-    st.header("📋 総合リスク判定レポート")
+    # テスト4: フィルタリング
+    noisy_data = np.sin(np.linspace(0, 4*np.pi, 100)) + np.random.normal(0, 0.1, 100)
+    filtered_data = math_core.savitzky_golay_filter(noisy_data)
+    print(f"フィルタ前の標準偏差: {np.std(noisy_data):.4f}")
+    print(f"フィルタ後の標準偏差: {np.std(filtered_data):.4f}")
     
-    r1, r2 = st.columns(2)
-    
-    with r1:
-        st.subheader("🚨 転倒リスク評価")
-        if calculated_cv >= 21.7:
-            st.error(f"【高リスク】CV値 {calculated_cv:.1f}%。歩行のバラつきが大きく、不安定です。")
-        else:
-            st.success(f"【低リスク】CV値 {calculated_cv:.1f}%。歩行の一定性が保たれています。")
-        
-        if max_flexion_angle < 15.0: # 臨床的目安としての15度
-            st.warning("⚠️ 第1歩の振り出しが弱く、つまずきやすい傾向があります。")
-
-    with r2:
-        st.subheader("脊柱・腰痛リスク評価")
-        if calculated_phase < 20.0:
-            st.error(f"【要注意】位相差 {calculated_phase:.1f}°。胸郭と骨盤が同調しすぎています（剛性の増加）。")
-            st.info("💡 PTアドバイス: 体幹のしなやかさを出す回旋ストレッチを推奨します。")
-        else:
-            st.success(f"【良好】位相差 {calculated_phase:.1f}°。体幹のしなやかな回旋が保たれています。")
-
-# --- 6. エビデンスメモ ---
-with st.expander("📚 アルゴリズムの根拠（PT用）"):
-    st.markdown("""
-    * **転倒リスク (Sakane 2025):** 第1歩の股関節屈曲角度を分析。
-    * **歩行変動性 (Park 2025):** ステップ幅変動係数(CV)のカットオフ値 **21.7%**。
-    * **腰痛リスク (Smith/Xu):** 胸郭と骨盤の相対位相差 **20度未満** を剛性増加（脊柱の固定化）の指標とする。
-    """)
+    print("\n✓ GaitMathCore の基本機能テスト完了")
