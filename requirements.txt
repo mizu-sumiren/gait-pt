@@ -1,5 +1,6 @@
 streamlit
-mediapipe==0.10.11
-opencv-python-headless
+mediapipe
+pandas
 numpy
-protobuf==3.20.3
+opencv-python-headless
+scipy
